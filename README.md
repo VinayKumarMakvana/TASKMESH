@@ -261,20 +261,26 @@ return lhs.sequence_number > rhs.sequence_number;   // Smaller sequence number f
 
 ## Deployment & Production Usage
 
-Please refer to **[docs/deployment.md](docs/deployment.md)** for exhaustive details on running the server natively, via Docker, behind reverse proxies, or over cloud edge tunnels.
+Please refer to **[docs/deployment.md](docs/deployment.md)** for exhaustive details on running the server natively, via Docker, or across cloud platforms.
 
-### Quick Start (Server with Embedded Dashboard)
+### 1. Local Server Quick Start (Embedded Dashboard)
 
 ```powershell
 # Run TaskMesh server on port 8080 with 4 workers and persistent SQLite database
 .\build\Release\taskmesh_server.exe --port 8080 --host 0.0.0.0 --workers 4 --db taskmesh.db
 ```
 
-Then visit:
 - **Web Dashboard**: `http://localhost:8080/dashboard` or `http://localhost:8080/`
 - **Health Check**: `http://localhost:8080/health`
 - **Live Metrics**: `http://localhost:8080/api/v1/metrics`
 - **Database Stats**: `http://localhost:8080/api/v1/stats`
+
+### 2. 24/7 Cloud Deployment (Fly.io, Render, Docker Compose)
+
+TaskMesh provides turnkey cloud configuration files:
+- **Fly.io** ([`fly.toml`](fly.toml)): Continuous 24/7 execution with persistent NVMe volume (`/data`) and automated health checks (~$0.00 - $1.94/mo).
+- **Render** ([`render.yaml`](render.yaml)): Infrastructure-as-code Blueprint with persistent disk attached at `/data`.
+- **Docker Compose** ([`docker-compose.yml`](docker-compose.yml) & [`.env.example`](.env.example)): Multi-stage non-root container deployment for Linux VPS.
 
 ---
 

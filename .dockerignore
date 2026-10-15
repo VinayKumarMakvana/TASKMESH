@@ -1,0 +1,21 @@
+# Build outputs and temporary directories
+build/
+build-*/
+out/
+bin/
+lib/
+.vs/
+.cache/
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm
+
+# Git and IDE
+.git/
+.vscode/
+.idea/
+
+# Environment files with secrets
+.env

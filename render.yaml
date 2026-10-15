@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: taskmesh-service
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    disk:
+      name: taskmesh-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: TASKMESH_HOST
+        value: 0.0.0.0
+      - key: TASKMESH_PORT
+        value: 8080
+      - key: TASKMESH_DB_PATH
+        value: /data/taskmesh.db
+      - key: TASKMESH_WORKERS
+        value: 4
+      - key: TASKMESH_API_KEY
+        generateValue: true

@@ -98,25 +98,82 @@ docker inspect --format='{{json .State.Health}}' taskmesh-server
 
 ---
 
-## 4. Public Deployment & Reachability
+## 4. Permanent Cloud Hosting & 24/7 Deployment
 
-To expose TaskMesh publicly to users and remote services:
+To run TaskMesh continuously without requiring a local workstation to remain powered on, deploy the container to a cloud provider with persistent volume support.
 
-### 1. Cloud Virtual Machines (AWS EC2, Hetzner, DigitalOcean)
-- Deploy the Docker container or native binary.
-- Bind `--host 0.0.0.0`.
-- Configure security groups / firewall to allow inbound traffic on port 80/443.
-- Use Nginx or Caddy as reverse proxy with automatic TLS (Let's Encrypt).
+### Platform Comparison & Cost Analysis
 
-### 2. Cloudflare Tunnel / Local Tunnel (Instant Public Reachability)
-For public edge routing without exposing public IPs or opening router ports:
-```bash
-# Using Cloudflare Tunnel
-cloudflared tunnel --url http://localhost:8080
+| Platform | Compute Plan | Persistent Storage | Estimated Cost | Uptime / Sleep Behavior | Recommendation |
+|---|---|---|---|---|---|
+| **Fly.io** | Shared CPU 1x (256MB) | 1 GB NVMe Volume (`/data`) | **$0.00 - $1.94 / mo** (Free allowance includes 3 VMs & 3GB volume) | 24/7 continuous (`min_machines_running = 1`) | **Recommended** (Native Docker + NVMe volume) |
+| **Render.com** | Starter ($7.00/mo) | 1 GB Persistent Disk ($0.25/mo) | **~$7.25 / mo** | 24/7 continuous | Good alternative (Free tier lacks disk persistence) |
+| **Railway.app** | Hobby ($5.00/mo) | 1 GB Volume ($0.25/mo) | **~$5.25 / mo** | 24/7 continuous | Good alternative with web UI |
+| **Cloud VPS (Hetzner / Lightsail)** | 1 vCPU / 1GB RAM | 20-40 GB SSD block storage | **$3.50 - $5.00 / mo** | 24/7 continuous Linux host | Maximum control and fixed cost |
 
-# Using Localtunnel
-npx localtunnel --port 8080
-```
+> [!WARNING]
+> Free-tier services that provide only **ephemeral disks** (e.g. Render Free, Koyeb Free) wipe SQLite files (`taskmesh.db`) whenever the container idles or restarts. For durable job execution, always attach a **persistent volume** mounted to `/data`.
+
+---
+
+### Deploying to Fly.io (Step-by-Step)
+
+The repository includes a ready-to-deploy [`fly.toml`](../fly.toml) preconfigured with persistent NVMe volume mounts and healthchecks.
+
+1. **Install flyctl**:
+   ```powershell
+   # Windows PowerShell:
+   iwr https://fly.io/install.ps1 -useb | iex
+   ```
+2. **Authenticate with Fly.io**:
+   ```bash
+   flyctl auth login
+   ```
+3. **Provision the Persistent Volume**:
+   ```bash
+   flyctl volumes create taskmesh_data --region iad --size 1
+   ```
+4. **Set Production Secrets (API Key)**:
+   ```bash
+   flyctl secrets set TASKMESH_API_KEY="your-unique-high-entropy-production-key"
+   ```
+5. **Deploy the Service**:
+   ```bash
+   flyctl deploy
+   ```
+6. **Verify Public Endpoints**:
+   ```bash
+   curl https://taskmesh-engine.fly.dev/health
+   curl https://taskmesh-engine.fly.dev/dashboard
+   ```
+
+---
+
+### Deploying to Render (Blueprint)
+
+1. Connect your GitHub repository to Render.
+2. In the Render Dashboard, click **New +** $\rightarrow$ **Blueprint**.
+3. Select this repository; Render will automatically detect [`render.yaml`](../render.yaml).
+4. Render will provision the Starter service with a 1GB persistent disk at `/data` and auto-generate a secret `TASKMESH_API_KEY`.
+
+---
+
+### Deploying to Cloud VPS via Docker Compose
+
+1. Clone the repository onto the remote Linux server:
+   ```bash
+   git clone <repo-url> /opt/taskmesh && cd /opt/taskmesh
+   ```
+2. Create production `.env` from template:
+   ```bash
+   cp .env.example .env
+   # Edit .env and set your secure TASKMESH_API_KEY
+   ```
+3. Launch with persistent volume:
+   ```bash
+   docker compose up -d
+   ```
+4. Configure Nginx / Caddy reverse proxy with automatic Let's Encrypt TLS.
 
 ---
 
