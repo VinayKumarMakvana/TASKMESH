@@ -25,3 +25,8 @@ Release/
 # Operating System
 Thumbs.db
 Desktop.ini
+
+# SQLite Databases & WAL
+*.db
+*.db-wal
+*.db-shm

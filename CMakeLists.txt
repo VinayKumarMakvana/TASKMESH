@@ -55,10 +55,12 @@ add_library(taskmesh_core STATIC
     src/concurrent_priority_queue.cpp
     src/execution_engine.cpp
     src/job_store.cpp
+    src/server.cpp
 )
 
 target_include_directories(taskmesh_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -66,6 +68,10 @@ target_link_libraries(taskmesh_core PUBLIC
     taskmesh_warnings
     sqlite3
 )
+
+if(WIN32)
+    target_link_libraries(taskmesh_core PUBLIC ws2_32 wsock32 crypt32)
+endif()
 
 target_compile_features(taskmesh_core PUBLIC cxx_std_20)
 
@@ -79,6 +85,17 @@ target_link_libraries(taskmesh_cli PRIVATE
 )
 
 target_compile_features(taskmesh_cli PRIVATE cxx_std_20)
+
+# Production Server Application (REST API + Web Dashboard)
+add_executable(taskmesh_server
+    src/server_main.cpp
+)
+
+target_link_libraries(taskmesh_server PRIVATE
+    taskmesh_core
+)
+
+target_compile_features(taskmesh_server PRIVATE cxx_std_20)
 
 # Test Suite
 if(TASKMESH_BUILD_TESTS)

@@ -21,6 +21,7 @@ add_executable(taskmesh_tests
     concurrent_queue_tests.cpp
     execution_engine_tests.cpp
     job_store_tests.cpp
+    server_tests.cpp
 )
 
 target_link_libraries(taskmesh_tests PRIVATE
