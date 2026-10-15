@@ -34,6 +34,19 @@ else()
     )
 endif()
 
+# Third-party SQLite3 library
+add_library(sqlite3 STATIC
+    third_party/sqlite/sqlite3.c
+)
+target_include_directories(sqlite3 PUBLIC
+    third_party/sqlite
+)
+if(MSVC)
+    target_compile_options(sqlite3 PRIVATE /W3 /EHsc)
+else()
+    target_compile_options(sqlite3 PRIVATE -w)
+endif()
+
 # Core static library
 add_library(taskmesh_core STATIC
     src/job.cpp
@@ -41,6 +54,7 @@ add_library(taskmesh_core STATIC
     src/job_executor.cpp
     src/concurrent_priority_queue.cpp
     src/execution_engine.cpp
+    src/job_store.cpp
 )
 
 target_include_directories(taskmesh_core PUBLIC
@@ -50,6 +64,7 @@ target_include_directories(taskmesh_core PUBLIC
 
 target_link_libraries(taskmesh_core PUBLIC
     taskmesh_warnings
+    sqlite3
 )
 
 target_compile_features(taskmesh_core PUBLIC cxx_std_20)
