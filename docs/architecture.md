@@ -6,6 +6,7 @@ TaskMesh is an asynchronous job-processing platform designed for mission-critica
 
 The architecture emphasizes:
 - **Correctness Before Features**: No premature distributed claims; core algorithmic correctness is rigorously proven first.
+- **Problem-Driven DSA Selection**: Every data structure and algorithm is selected according to operational requirements, cache characteristics, and complexity trade-offs, fully documented in [docs/dsa_design_decisions.md](dsa_design_decisions.md).
 - **Explicit Domain Modeling**: All entity identifiers, status transitions, and priority values are strictly typed and validated at construction and mutation boundaries.
 - **Predictable Complexity**: Strict $O(\log N)$ enqueue/dequeue guarantees with cache-friendly contiguous vector backing.
 - **Resource Safety**: Complete RAII compliance and zero manual memory management.

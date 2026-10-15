@@ -220,14 +220,20 @@ Running `taskmesh_cli.exe` produces the following trace:
 
 ---
 
-## Design Decisions & Complexity Analysis
+## Problem-Driven DSA Selection & Design Decisions
 
-### Time and Space Complexities
-- **`enqueue`**: $O(\log N)$ amortized time. Pushes the job into the binary heap backed by contiguous storage.
-- **`dequeue`**: $O(\log N)$ time. Extracts top job and reheapifies.
-- **`peek`**: $O(1)$ time. Direct inspection of root element.
-- **`size` / `empty`**: $O(1)$ time.
-- **Space Complexity**: $O(N)$ contiguous storage inside `std::vector`, minimizing pointer chasing and maximizing cache locality.
+TaskMesh selects data structures and algorithms strictly based on operation requirements, cache behavior, memory footprint, maintainability, and correctness—never to artificially demonstrate algorithm complexity.
+
+A comprehensive, formal design record is maintained in **[docs/dsa_design_decisions.md](docs/dsa_design_decisions.md)**.
+
+### Summary of Core DSA Choices
+
+| Component | Selected Structure | Workload Rationale | Time Complexity | Space Complexity |
+|:---|:---|:---|:---:|:---:|
+| **Priority Scheduling** | `std::priority_queue` with monotonic 64-bit sequence counter | Array-backed binary max-heap maximizes cache locality; monotonic sequence preserves strict FIFO tie-breaking for equal-priority jobs. | Enqueue: $O(\log N)$<br>Dequeue: $O(\log N)$<br>Peek: $O(1)$ | $O(N)$ contiguous storage |
+| **Handler Dispatch** | `std::unordered_map<std::string, Handler>` | Fast, constant-time lookup by job type on hot execution path. | $O(1)$ average | $O(M)$ where $M$ is handler count |
+| **ID Validation** | Linear character check loop | Rejects invalid characters without heavy regular expression engine overhead. | $O(L)$ where $L \le 128$ | $O(1)$ auxiliary |
+| **State Machine** | Compile-time jump table (`switch`) | Constant-time validation of valid lifecycle state transitions. | $O(1)$ | $O(1)$ |
 
 ### Deterministic FIFO Tie-Breaking
 Standard binary heaps are unstable. TaskMesh tags every arriving job with a 64-bit monotonically increasing sequence number:
@@ -238,6 +244,7 @@ if (lhs.job.priority() != rhs.job.priority()) {
 return lhs.sequence_number > rhs.sequence_number;   // Smaller sequence number first (FIFO)
 ```
 - **Overflow Consideration**: An unsigned 64-bit counter sustains 1 billion enqueues/sec for ~584 years before saturation. If saturated, it explicitly throws `std::overflow_error` rather than silently wrapping around and corrupting the FIFO invariant.
+
 
 ---
 
