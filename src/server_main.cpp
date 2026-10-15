@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "taskmesh/server.hpp"
 
 #include <csignal>
@@ -20,18 +21,35 @@ int main(int argc, char* argv[]) {
     taskmesh::ServerConfig config;
 
     // 1. Environment variable defaults
-    const char* env_port = std::getenv("PORT");
+    const char* env_host = std::getenv("TASKMESH_HOST");
+    if (!env_host) {
+        env_host = std::getenv("HOST");
+    }
+    if (env_host) {
+        config.host = env_host;
+    }
+
+    const char* env_port = std::getenv("TASKMESH_PORT");
+    if (!env_port) {
+        env_port = std::getenv("PORT");
+    }
     if (env_port) {
         try { config.port = std::stoi(env_port); } catch (...) {}
     }
+
     const char* env_workers = std::getenv("TASKMESH_WORKERS");
     if (env_workers) {
         try { config.num_workers = std::stoul(env_workers); } catch (...) {}
     }
-    const char* env_db = std::getenv("TASKMESH_DB");
+
+    const char* env_db = std::getenv("TASKMESH_DB_PATH");
+    if (!env_db) {
+        env_db = std::getenv("TASKMESH_DB");
+    }
     if (env_db) {
         config.db_path = env_db;
     }
+
     const char* env_key = std::getenv("TASKMESH_API_KEY");
     if (env_key) {
         config.api_key = env_key;
