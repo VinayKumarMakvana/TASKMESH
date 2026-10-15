@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 project(TaskMesh
     VERSION 0.1.0
     DESCRIPTION "High-performance priority job scheduling engine in modern C++20"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 # Enforce C++20 standard
@@ -71,6 +71,8 @@ target_link_libraries(taskmesh_core PUBLIC
 
 if(WIN32)
     target_link_libraries(taskmesh_core PUBLIC ws2_32 wsock32 crypt32)
+else()
+    target_link_libraries(taskmesh_core PUBLIC pthread dl)
 endif()
 
 target_compile_features(taskmesh_core PUBLIC cxx_std_20)
@@ -96,6 +98,14 @@ target_link_libraries(taskmesh_server PRIVATE
 )
 
 target_compile_features(taskmesh_server PRIVATE cxx_std_20)
+
+# Install targets
+install(TARGETS taskmesh_server taskmesh_cli taskmesh_core sqlite3
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)
+install(DIRECTORY include/ DESTINATION include)
 
 # Test Suite
 if(TASKMESH_BUILD_TESTS)

@@ -1,0 +1,59 @@
+name: TaskMesh CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  windows-msvc:
+    name: Windows MSVC (C++20)
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DTASKMESH_BUILD_TESTS=ON
+
+      - name: Build Project
+        run: |
+          cmake --build build --config ${{ matrix.build_type }}
+
+      - name: Run Test Suite
+        run: |
+          ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  linux-gcc:
+    name: Ubuntu Linux GCC 13 (C++20)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 cmake ninja-build
+
+      - name: Configure CMake
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTASKMESH_BUILD_TESTS=ON
+
+      - name: Build Project
+        run: |
+          cmake --build build
+
+      - name: Run Test Suite
+        run: |
+          ctest --test-dir build --output-on-failure

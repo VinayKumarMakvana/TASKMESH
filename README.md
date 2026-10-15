@@ -15,25 +15,36 @@ TaskMesh solves these core challenges starting from a robust, mathematically det
 
 ---
 
-## Current Status (Phase 1 Implemented)
+## Current Status & Capabilities
 
-TaskMesh is currently at **Phase 1: Production-Minded Engineering Foundation**.
+TaskMesh is a fully implemented, production-minded C++20 concurrent background job execution platform with persistent storage, HTTP REST API, and an interactive dark-mode web dashboard.
 
-### What Is Implemented & Verified:
-- [x] **Strongly Typed Job Model**: `JobId`, `JobPriority`, `JobStatus`, timestamps, attempt tracking, and validation rules.
-- [x] **In-Memory Priority Scheduler**: $O(\log N)$ enqueue/dequeue using `std::priority_queue` with contiguous `std::vector` backing.
-- [x] **Deterministic Equal-Priority FIFO Tie-Breaking**: Monotonic 64-bit sequence counter ensuring older jobs execute first among equal priorities.
-- [x] **Execution Abstraction**: `IJobExecutor` interface and `InMemoryJobExecutor` implementation with custom type handlers and error isolation.
-- [x] **CLI Demonstration Application**: Real-world job scheduling demonstration with error reporting and execution traces.
-- [x] **Automated Test Suite**: 40 unit and stress tests passing under GoogleTest and CTest.
-- [x] **Zero-Warning MSVC Build**: Strict `/W4` and `/permissive-` standard conformance under Visual Studio 2026.
-
-### What Is Planned For Later Phases (NOT Yet Implemented):
-- [ ] Concurrent worker thread pools with work-stealing (Phase 2).
-- [ ] Thread-safe concurrent queue synchronization (Phase 2).
-- [ ] Persistent job storage (PostgreSQL / SQLite) (Phase 3).
-- [ ] Distributed broker integration (Redis / Kafka) (Phase 4).
-- [ ] HTTP REST API & Metrics Dashboard (Phase 5).
+### Core Implemented Capabilities:
+- [x] **Strongly Typed Job Model**: `JobId`, `JobPriority`, `JobStatus`, microsecond timestamps, attempt tracking, and validation rules.
+- [x] **In-Memory Priority Scheduler**: Array-backed binary heap with deterministic monotonic 64-bit FIFO tie-breaking for equal-priority jobs.
+- [x] **Concurrent Execution Engine (Phase 2)**:
+  - Thread-safe `ConcurrentPriorityQueue` utilizing condition variables and wait timeouts.
+  - Multi-worker pool using modern `std::jthread` with cooperative interruption tokens.
+  - Linearized cancellation protocol: guaranteed pre-execution cancellation (LP 3) & cooperative cancellation (LP 4).
+  - Graceful draining (`GracefulDrain`) and immediate purge (`ImmediateStop`).
+  - Thread-safe atomic metrics invariant: `submitted == queued + running + completed + failed + cancelled`.
+- [x] **Durable Persistent Storage & Crash Recovery (Phase 3)**:
+  - High-throughput SQLite store (`SqliteJobStore`) configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL`).
+  - Indexed queries on `(status, priority DESC, creation_time ASC)`.
+  - Automatic crash recovery on engine startup (`recover_uncompleted_jobs`) requeuing orphaned running jobs.
+- [x] **HTTP REST API & Security (Phase 4)**:
+  - RESTful endpoints for submission, querying, metrics, and cooperative cancellation.
+  - Token-based authentication (`Authorization: Bearer <token>` or `X-API-Key`).
+  - Sliding-window IP rate limiting (rejection with HTTP 429 Too Many Requests).
+  - Strongly validated JSON payloads using `nlohmann/json`.
+- [x] **Embedded Responsive Web Dashboard (Phase 5)**:
+  - Single-page application served directly from the server binary without external assets.
+  - Live metric gauges, job submission modal, cancellation triggers, and real-time polling.
+- [x] **Production Containerization & CI (Phase 6)**:
+  - Multi-stage non-root `Dockerfile` with automated test validation.
+  - `docker-compose.yml` with persistent volumes and healthchecks.
+  - GitHub Actions CI matrix running Windows MSVC and Ubuntu Linux GCC 13.
+- [x] **67 Automated Tests**: 100% pass rate in both Debug and Release configurations across 7 test suites.
 
 ---
 
@@ -248,18 +259,26 @@ return lhs.sequence_number > rhs.sequence_number;   // Smaller sequence number f
 
 ---
 
-## Known Limitations (Phase 1)
+## Deployment & Production Usage
 
-1. **Single-Threaded**: The `PriorityScheduler` is intentionally single-threaded. Concurrency and synchronization primitives belong to Phase 2.
-2. **In-Memory Volatile**: Jobs do not persist across process restarts. Persistence layers (SQLite / PostgreSQL) are planned for Phase 3.
-3. **No Distributed Networking**: No remote RPC, HTTP server, or Redis broker is active in Phase 1.
+Please refer to **[docs/deployment.md](docs/deployment.md)** for exhaustive details on running the server natively, via Docker, behind reverse proxies, or over cloud edge tunnels.
+
+### Quick Start (Server with Embedded Dashboard)
+
+```powershell
+# Run TaskMesh server on port 8080 with 4 workers and persistent SQLite database
+.\build\Release\taskmesh_server.exe --port 8080 --host 0.0.0.0 --workers 4 --db taskmesh.db
+```
+
+Then visit:
+- **Web Dashboard**: `http://localhost:8080/dashboard` or `http://localhost:8080/`
+- **Health Check**: `http://localhost:8080/health`
+- **Live Metrics**: `http://localhost:8080/api/v1/metrics`
+- **Database Stats**: `http://localhost:8080/api/v1/stats`
 
 ---
 
-## Roadmap
+## Known Limitations
 
-- **Phase 1 (Complete)**: Core domain model, priority scheduler with FIFO tie-breaking, executor abstraction, CLI demo, and automated test suite.
-- **Phase 2**: Multi-threaded worker pool, thread-safe concurrent queue with condition variables, cancellation tokens, and shutdown synchronization.
-- **Phase 3**: Persistent storage engine (WAL / SQLite / PostgreSQL) and crash recovery.
-- **Phase 4**: Exponential backoff retry policies, dead-letter queues (DLQ), and circuit breakers.
-- **Phase 5**: REST API server, structured JSON telemetry, and metrics dashboard.
+1. **Single Node (Vertical Scaling)**: TaskMesh uses high-concurrency multi-threaded workers and embedded SQLite WAL storage on a single host. Distributed multi-node consensus (e.g. Raft) is outside the single-binary scope.
+2. **Fixed Handlers in Embedded Binary**: Custom job executors can be registered programmatically via the C++ `IJobExecutor` API; the default standalone binary executes built-in handler types (`payment_processing`, `data_aggregation`, `email_dispatch`, `heavy_compute`, `io_simulation`) with realistic simulated work and cooperative cancellation checks.
