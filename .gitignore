@@ -1,0 +1,27 @@
+# Build directories
+build/
+build-*/
+out/
+bin/
+lib/
+cmake-build-*/
+.cache/
+
+# Visual Studio files
+.vs/
+*.sln
+*.vcxproj*
+*.user
+x64/
+Debug/
+Release/
+
+# Tooling and IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Operating System
+Thumbs.db
+Desktop.ini
