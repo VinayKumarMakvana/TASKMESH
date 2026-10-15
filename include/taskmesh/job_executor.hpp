@@ -1,9 +1,13 @@
 #pragma once
 
+#include "taskmesh/cancellation_token.hpp"
 #include "taskmesh/job.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -26,61 +30,88 @@ struct ExecutionResult {
                                               std::chrono::milliseconds duration = std::chrono::milliseconds{0}) {
         return ExecutionResult{false, std::move(message), duration};
     }
+
+    [[nodiscard]] static ExecutionResult cancelled(std::string message = "Execution cancelled",
+                                                  std::chrono::milliseconds duration = std::chrono::milliseconds{0}) {
+        return ExecutionResult{false, std::move(message), duration};
+    }
 };
 
 /**
  * @brief Abstract interface separating job scheduling from job execution.
+ *
+ * Designed for backward compatibility:
+ * - Subclasses only implementing Phase 1 `execute(Job&)` remain fully functional.
+ * - Subclasses supporting cancellation override `execute(Job&, const JobExecutionContext&)`.
  */
 class IJobExecutor {
 public:
     virtual ~IJobExecutor() = default;
 
     /**
-     * @brief Executes a single job, updating its attempt count and lifecycle status.
-     * @param job Reference to the job to be executed.
-     * @return ExecutionResult containing outcome and timing details.
+     * @brief Phase 1 pure virtual execution contract.
      */
     [[nodiscard]] virtual ExecutionResult execute(Job& job) = 0;
+
+    /**
+     * @brief Phase 2 context-aware execution contract.
+     * Default implementation delegates to execute(job) for backward compatibility.
+     */
+    [[nodiscard]] virtual ExecutionResult execute(Job& job, const JobExecutionContext& context) {
+        (void)context;
+        return execute(job);
+    }
 };
 
 /**
- * @brief In-memory test and demonstration executor.
+ * @brief Thread-safe in-memory job executor.
  *
- * Dispatches jobs to registered handlers by job type, or uses a default execution strategy.
- * Updates the job lifecycle: transitions to Running, increments attempt count, and sets
- * Completed or Failed according to handler outcome.
+ * Supports both simple and cancellable handlers. Thread-safe for concurrent invocations
+ * from multiple worker threads.
  */
 class InMemoryJobExecutor : public IJobExecutor {
 public:
-    using Handler = std::function<ExecutionResult(const Job&)>;
+    using SimpleHandler = std::function<ExecutionResult(const Job&)>;
+    using CancellableHandler = std::function<ExecutionResult(const Job&, const JobExecutionContext&)>;
 
     InMemoryJobExecutor() = default;
 
     /**
-     * @brief Registers a custom handler for a given job type.
+     * @brief Registers a simple handler (ignores cancellation).
      */
-    void register_handler(std::string job_type, Handler handler);
+    void register_handler(std::string job_type, SimpleHandler handler);
 
     /**
-     * @brief Sets a fallback handler for jobs without a specifically registered type handler.
+     * @brief Registers a cancellable handler.
      */
-    void set_default_handler(Handler handler);
+    void register_handler(std::string job_type, CancellableHandler handler);
 
     /**
-     * @brief Executes the job synchronously using the registered or default handler.
+     * @brief Sets a fallback simple handler.
      */
+    void set_default_handler(SimpleHandler handler);
+
+    /**
+     * @brief Sets a fallback cancellable handler.
+     */
+    void set_default_handler(CancellableHandler handler);
+
+    // Overrides
     [[nodiscard]] ExecutionResult execute(Job& job) override;
+    [[nodiscard]] ExecutionResult execute(Job& job, const JobExecutionContext& context) override;
 
-    [[nodiscard]] size_t executed_count() const noexcept { return executed_count_; }
-    [[nodiscard]] size_t successful_count() const noexcept { return successful_count_; }
-    [[nodiscard]] size_t failed_count() const noexcept { return failed_count_; }
+    [[nodiscard]] uint64_t executed_count() const noexcept { return executed_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t successful_count() const noexcept { return successful_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t failed_count() const noexcept { return failed_count_.load(std::memory_order_relaxed); }
 
 private:
-    std::unordered_map<std::string, Handler> handlers_;
-    Handler default_handler_;
-    size_t executed_count_{0};
-    size_t successful_count_{0};
-    size_t failed_count_{0};
+    mutable std::shared_mutex handlers_mutex_;
+    std::unordered_map<std::string, CancellableHandler> handlers_;
+    CancellableHandler default_handler_;
+
+    std::atomic<uint64_t> executed_count_{0};
+    std::atomic<uint64_t> successful_count_{0};
+    std::atomic<uint64_t> failed_count_{0};
 };
 
 } // namespace taskmesh

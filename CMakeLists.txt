@@ -39,6 +39,8 @@ add_library(taskmesh_core STATIC
     src/job.cpp
     src/priority_scheduler.cpp
     src/job_executor.cpp
+    src/concurrent_priority_queue.cpp
+    src/execution_engine.cpp
 )
 
 target_include_directories(taskmesh_core PUBLIC

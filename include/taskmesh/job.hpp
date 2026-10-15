@@ -5,6 +5,7 @@
 #include <chrono>
 #include <compare>
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <optional>
 #include <stdexcept>
@@ -207,3 +208,12 @@ private:
 };
 
 } // namespace taskmesh
+
+namespace std {
+template <>
+struct hash<taskmesh::JobId> {
+    std::size_t operator()(const taskmesh::JobId& id) const noexcept {
+        return std::hash<std::string_view>{}(id.view());
+    }
+};
+} // namespace std

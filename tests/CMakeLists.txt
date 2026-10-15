@@ -18,6 +18,8 @@ add_executable(taskmesh_tests
     job_tests.cpp
     priority_scheduler_tests.cpp
     job_executor_tests.cpp
+    concurrent_queue_tests.cpp
+    execution_engine_tests.cpp
 )
 
 target_link_libraries(taskmesh_tests PRIVATE
