@@ -141,11 +141,13 @@ public:
 
 - **`InMemoryJobExecutor`**:
   - Implements `IJobExecutor`.
+  - Rejects jobs that are not in an executable status (`Pending` or `Queued`), or that have reached their attempt limit, returning a well-defined `ExecutionResult::error` without mutating the job's state or attempt count.
   - Supports registering type-specific handlers (`register_handler(type, fn)`).
   - Provides a fallback default handler.
   - Automatically manages lifecycle transitions (`Queued` $\to$ `Running` $\to$ `Completed` / `Failed`).
   - Increments `attempt_count` and measures wall-clock execution duration.
   - Catches standard and non-standard exceptions thrown by handlers and marks the job failed with detailed error context.
+  - Guarantees metrics consistency: `executed_count() == successful_count() + failed_count()`.
 
 ---
 
@@ -159,7 +161,10 @@ TaskMesh uses explicit, non-silent error handling:
    - Thrown upon attempt count exceeding maximum attempts.
    - Thrown upon invalid lifecycle transitions.
    - Thrown upon enqueuing terminal (`Completed`, `Cancelled`) or `Running` jobs.
+   - Thrown upon enqueuing a `Failed` job that has exhausted all retry attempts (`!job.can_retry()`).
 2. **`std::overflow_error`**:
    - Thrown if the scheduler's 64-bit sequence counter saturates.
 3. **Safe Nil-Returns**:
    - Querying or dequeuing an empty queue returns `std::nullopt` or `nullptr` without throwing, avoiding exceptions for ordinary control flow.
+4. **Executor Rejections**:
+   - Jobs not eligible for execution (terminal status or exhausted attempt count) return `ExecutionResult::error` with original job state preserved.

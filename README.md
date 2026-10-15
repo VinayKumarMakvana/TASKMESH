@@ -25,7 +25,7 @@ TaskMesh is currently at **Phase 1: Production-Minded Engineering Foundation**.
 - [x] **Deterministic Equal-Priority FIFO Tie-Breaking**: Monotonic 64-bit sequence counter ensuring older jobs execute first among equal priorities.
 - [x] **Execution Abstraction**: `IJobExecutor` interface and `InMemoryJobExecutor` implementation with custom type handlers and error isolation.
 - [x] **CLI Demonstration Application**: Real-world job scheduling demonstration with error reporting and execution traces.
-- [x] **Automated Test Suite**: 31 unit and stress tests passing under GoogleTest and CTest.
+- [x] **Automated Test Suite**: 40 unit and stress tests passing under GoogleTest and CTest.
 - [x] **Zero-Warning MSVC Build**: Strict `/W4` and `/permissive-` standard conformance under Visual Studio 2026.
 
 ### What Is Planned For Later Phases (NOT Yet Implemented):

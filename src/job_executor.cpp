@@ -13,19 +13,32 @@ void InMemoryJobExecutor::set_default_handler(Handler handler) {
 ExecutionResult InMemoryJobExecutor::execute(Job& job) {
     ++executed_count_;
 
-    // Invariant check: job must be capable of execution
+    // H-01: Invariant check - job must be in an executable state (Pending or Queued).
+    // If not executable, reject immediately without mutating the job's lifecycle status.
     if (job.status() != JobStatus::Queued && job.status() != JobStatus::Pending) {
-        ExecutionResult res = ExecutionResult::error(
-            "Cannot execute job: status must be Pending or Queued, but is " + 
-            std::string(to_string(job.status())));
-        job.mark_failed(res.message);
         ++failed_count_;
-        return res;
+        return ExecutionResult::error(
+            "Cannot execute job '" + job.id().value() + "': status must be Pending or Queued, but is " + 
+            std::string(to_string(job.status())));
     }
 
-    // Transition job to Running and increment attempts
-    job.increment_attempt_count();
-    job.mark_running();
+    // H-02: Check attempt eligibility before mutating state.
+    // An attempt cannot be started if attempt_count has already reached max_attempts.
+    if (job.attempt_count() >= job.max_attempts()) {
+        ++failed_count_;
+        return ExecutionResult::error(
+            "Cannot execute job '" + job.id().value() + "': attempt limit reached (" + 
+            std::to_string(job.attempt_count()) + "/" + std::to_string(job.max_attempts()) + ").");
+    }
+
+    // Guard pre-execution lifecycle transitions
+    try {
+        job.increment_attempt_count();
+        job.mark_running();
+    } catch (const std::exception& ex) {
+        ++failed_count_;
+        return ExecutionResult::error(std::string("Pre-execution transition failed: ") + ex.what());
+    }
 
     const auto start_time = std::chrono::steady_clock::now();
 

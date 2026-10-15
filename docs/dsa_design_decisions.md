@@ -50,8 +50,11 @@ Background jobs arrive asynchronously with differing urgency levels (`Critical`,
 - **Dequeue (`pop`)**:
   - Time Complexity: $O(\log N)$ heap sift-down.
   - Space Complexity: $O(1)$ auxiliary.
+  - **Copy Trade-Off (L-02)**: `std::priority_queue::top()` returns `const value_type&`. In accordance with engineering safety principles, `const_cast` is deliberately rejected to avoid fragile or undefined behavior on container-managed heap nodes. Elements are safely copied out before popping. For Phase 1 payloads, this copy is negligible (~microsecond scale) and provides 100% standard conformance.
 - **Peek (`top`)**:
   - Time Complexity: $O(1)$ direct access to root element.
+- **Move Operations (L-01)**:
+  - Both move construction and move assignment leave the source scheduler in a canonical empty state (`size() == 0`, `sequence_counter_ == 0`), making it immediately reusable without manual clearing.
 - **Overall Container Space Complexity**:
   - $O(N)$ contiguous memory.
 
@@ -69,6 +72,10 @@ Background jobs arrive asynchronously with differing urgency levels (`Critical`,
 - `PrioritySchedulerTest.EqualPriorityFollowsStrictFIFO` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L55-L69).
 - `PrioritySchedulerTest.MultiplePrioritiesMixedTogether` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L71-L101).
 - `PrioritySchedulerTest.DeterministicStressBatchOrderingInvariant` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L170-L243) (5,000 jobs batch, verifying $A.\text{priority} \ge B.\text{priority}$ and FIFO tie-breaking across randomized arrivals).
+- `PrioritySchedulerTest.RejectEnqueueOfExhaustedFailedJob` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L293-L309) (M-01: retry eligibility).
+- `PrioritySchedulerTest.AcceptEnqueueOfRetryableFailedJob` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L311-L337) (M-01: valid retry support).
+- `PrioritySchedulerTest.MoveConstructorLeavesSourceInValidReusableState` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L339-L368) (L-01: move constructor).
+- `PrioritySchedulerTest.MoveAssignmentLeavesSourceInValidReusableState` in [tests/priority_scheduler_tests.cpp](file:///C:/Users/VINAY/OneDrive/Desktop/TASKMESH/tests/priority_scheduler_tests.cpp#L370-L394) (L-01: move assignment).
 
 ---
 

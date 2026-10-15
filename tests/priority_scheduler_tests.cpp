@@ -286,3 +286,109 @@ TEST(PrioritySchedulerTest, DeterministicStressBatchOrderingInvariant) {
     EXPECT_EQ(dequeued_count, kBatchSize);
     EXPECT_TRUE(scheduler.empty());
 }
+
+// -----------------------------------------------------------------------------
+// Regression Tests for Review Findings M-01 & L-01
+// -----------------------------------------------------------------------------
+
+TEST(PrioritySchedulerTest, RejectEnqueueOfExhaustedFailedJob) {
+    PriorityScheduler scheduler;
+
+    // A failed job with attempt_count == max_attempts has exhausted all retries
+    Job exhausted_failed = Job::Builder()
+        .with_id("failed-exhausted-1")
+        .with_type("email_dispatch")
+        .with_status(JobStatus::Failed)
+        .with_attempt_count(3)
+        .with_max_attempts(3)
+        .with_error_details("SMTP connection refused")
+        .build();
+
+    EXPECT_FALSE(exhausted_failed.can_retry());
+
+    EXPECT_THROW(scheduler.enqueue(exhausted_failed), JobValidationError);
+    EXPECT_TRUE(scheduler.empty());
+    EXPECT_EQ(scheduler.size(), 0u);
+}
+
+TEST(PrioritySchedulerTest, AcceptEnqueueOfRetryableFailedJob) {
+    PriorityScheduler scheduler;
+
+    // A failed job with attempt_count < max_attempts is eligible for retry
+    Job retryable_failed = Job::Builder()
+        .with_id("failed-retryable-1")
+        .with_type("email_dispatch")
+        .with_priority(JobPriority::High)
+        .with_status(JobStatus::Failed)
+        .with_attempt_count(1)
+        .with_max_attempts(3)
+        .with_error_details("Transient rate limit (429)")
+        .build();
+
+    EXPECT_TRUE(retryable_failed.can_retry());
+
+    EXPECT_NO_THROW(scheduler.enqueue(retryable_failed));
+    EXPECT_EQ(scheduler.size(), 1u);
+
+    auto dequeued_opt = scheduler.dequeue();
+    ASSERT_TRUE(dequeued_opt.has_value());
+    EXPECT_EQ(dequeued_opt->id().value(), "failed-retryable-1");
+    // State machine verifies transition from Failed -> Queued upon successful enqueue
+    EXPECT_EQ(dequeued_opt->status(), JobStatus::Queued);
+    EXPECT_EQ(dequeued_opt->attempt_count(), 1u);
+    EXPECT_EQ(dequeued_opt->max_attempts(), 3u);
+}
+
+TEST(PrioritySchedulerTest, MoveConstructorLeavesSourceInValidReusableState) {
+    PriorityScheduler s1;
+
+    s1.enqueue(Job::Builder().with_id("orig-1").with_type("t").with_priority(JobPriority::Low).build());
+    s1.enqueue(Job::Builder().with_id("orig-2").with_type("t").with_priority(JobPriority::High).build());
+
+    EXPECT_EQ(s1.size(), 2u);
+    EXPECT_EQ(s1.current_sequence_number(), 2u);
+
+    // Move construct s2 from s1
+    PriorityScheduler s2(std::move(s1));
+
+    // s2 must possess the moved jobs and counter
+    EXPECT_EQ(s2.size(), 2u);
+    EXPECT_EQ(s2.dequeue()->id().value(), "orig-2"); // High popped first
+    EXPECT_EQ(s2.dequeue()->id().value(), "orig-1"); // Low popped second
+
+    // L-01: s1 must be left in a canonical empty, reusable state with counter reset to 0
+    EXPECT_TRUE(s1.empty());
+    EXPECT_EQ(s1.size(), 0u);
+    EXPECT_EQ(s1.current_sequence_number(), 0u);
+
+    // Reuse s1: verify enqueue works cleanly and starts sequence at 0
+    s1.enqueue(Job::Builder().with_id("reused-1").with_type("t").build());
+    EXPECT_EQ(s1.size(), 1u);
+    EXPECT_EQ(s1.current_sequence_number(), 1u);
+    EXPECT_EQ(s1.dequeue()->id().value(), "reused-1");
+    EXPECT_TRUE(s1.empty());
+}
+
+TEST(PrioritySchedulerTest, MoveAssignmentLeavesSourceInValidReusableState) {
+    PriorityScheduler s1;
+    s1.enqueue(Job::Builder().with_id("s1-job").with_type("t").build());
+
+    PriorityScheduler s2;
+    s2.enqueue(Job::Builder().with_id("s2-job-1").with_type("t").build());
+    s2.enqueue(Job::Builder().with_id("s2-job-2").with_type("t").build());
+
+    // Move assign s1 into s2
+    s2 = std::move(s1);
+
+    EXPECT_EQ(s2.size(), 1u);
+    EXPECT_EQ(s2.dequeue()->id().value(), "s1-job");
+
+    // L-01: s1 must be cleanly reset and immediately reusable
+    EXPECT_TRUE(s1.empty());
+    EXPECT_EQ(s1.size(), 0u);
+    EXPECT_EQ(s1.current_sequence_number(), 0u);
+
+    s1.enqueue(Job::Builder().with_id("new-s1-job").with_type("t").build());
+    EXPECT_EQ(s1.size(), 1u);
+    EXPECT_EQ(s1.dequeue()->id().value(), "new-s1-job");
+}

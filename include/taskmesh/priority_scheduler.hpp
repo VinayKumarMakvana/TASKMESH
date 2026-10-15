@@ -48,8 +48,20 @@ public:
     // Non-copyable (queue state is unique), but movable
     PriorityScheduler(const PriorityScheduler&) = delete;
     PriorityScheduler& operator=(const PriorityScheduler&) = delete;
-    PriorityScheduler(PriorityScheduler&&) noexcept = default;
-    PriorityScheduler& operator=(PriorityScheduler&&) noexcept = default;
+
+    /**
+     * @brief Move constructor.
+     * Leaves the moved-from instance in a valid, canonical empty state (empty queue,
+     * sequence_counter_ reset to 0), fully reusable for subsequent enqueues.
+     */
+    PriorityScheduler(PriorityScheduler&& other) noexcept;
+
+    /**
+     * @brief Move assignment operator.
+     * Replaces current contents with other's contents. Leaves the moved-from instance
+     * in a valid, canonical empty state (empty queue, sequence_counter_ reset to 0).
+     */
+    PriorityScheduler& operator=(PriorityScheduler&& other) noexcept;
 
     /**
      * @brief Enqueues a job into the priority scheduler.
