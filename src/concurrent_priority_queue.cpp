@@ -18,6 +18,17 @@ void ConcurrentPriorityQueue::push(Job job) {
     cv_.notify_one();
 }
 
+void ConcurrentPriorityQueue::push_retry(Job job) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_) {
+            throw std::runtime_error("Cannot push to closed ConcurrentPriorityQueue.");
+        }
+        scheduler_.enqueue(std::move(job));
+    }
+    cv_.notify_one();
+}
+
 std::optional<Job> ConcurrentPriorityQueue::try_pop() {
     std::lock_guard<std::mutex> lock(mutex_);
     return scheduler_.dequeue();

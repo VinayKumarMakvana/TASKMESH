@@ -56,6 +56,7 @@ add_library(taskmesh_core STATIC
     src/execution_engine.cpp
     src/job_store.cpp
     src/server.cpp
+    src/dashboard_html.cpp
 )
 
 target_include_directories(taskmesh_core PUBLIC

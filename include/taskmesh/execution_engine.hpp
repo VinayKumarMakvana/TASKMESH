@@ -23,6 +23,8 @@ namespace taskmesh {
 struct ExecutionEngineConfig {
     size_t num_workers{4};
     std::chrono::milliseconds worker_poll_timeout{100};
+    bool auto_retry{true};
+    std::chrono::milliseconds retry_delay{0};
 };
 
 /**
@@ -45,11 +47,17 @@ struct EngineMetrics {
     uint64_t completed{0};
     uint64_t failed{0};
     uint64_t cancelled{0};
+    uint64_t retries{0};
 
     [[nodiscard]] bool check_invariant() const noexcept {
         return submitted == (queued + running + completed + failed + cancelled);
     }
 };
+
+/**
+ * @brief Callback invoked whenever a job transitions lifecycle state.
+ */
+using JobLifecycleCallback = std::function<void(const Job& job, JobStatus new_status, const std::string& message)>;
 
 /**
  * @brief Concurrent multi-threaded execution engine for TaskMesh.
@@ -121,6 +129,8 @@ public:
      */
     bool wait_until_stopped(std::chrono::milliseconds timeout = std::chrono::milliseconds::max());
 
+    void set_lifecycle_callback(JobLifecycleCallback callback);
+
     [[nodiscard]] bool is_running() const noexcept;
     [[nodiscard]] bool is_stopped() const noexcept;
     [[nodiscard]] EngineMetrics get_metrics() const;
@@ -132,6 +142,7 @@ private:
 
     IJobExecutor& executor_;
     ExecutionEngineConfig config_;
+    JobLifecycleCallback lifecycle_callback_{nullptr};
 
     // 1. Lifecycle management
     mutable std::mutex lifecycle_mutex_;

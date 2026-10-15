@@ -35,8 +35,8 @@ ExecutionResult InMemoryJobExecutor::execute(Job& job) {
 ExecutionResult InMemoryJobExecutor::execute(Job& job, const JobExecutionContext& context) {
     executed_count_.fetch_add(1, std::memory_order_relaxed);
 
-    // H-01: Invariant check - job must be in an executable state (Pending or Queued).
-    if (job.status() != JobStatus::Queued && job.status() != JobStatus::Pending) {
+    // Invariant check - job must be in an executable state (Pending, Queued, or Running).
+    if (job.status() != JobStatus::Queued && job.status() != JobStatus::Pending && job.status() != JobStatus::Running) {
         failed_count_.fetch_add(1, std::memory_order_relaxed);
         return ExecutionResult::error(
             "Cannot execute job '" + job.id().value() + "': status must be Pending or Queued, but is " + 

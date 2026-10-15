@@ -17,7 +17,7 @@ TaskMesh solves these core challenges starting from a robust, mathematically det
 
 ## Current Status & Capabilities
 
-TaskMesh is a fully implemented, production-minded C++20 concurrent background job execution platform with persistent storage, HTTP REST API, and an interactive dark-mode web dashboard.
+TaskMesh is a fully implemented, production-ready C++20 concurrent background job execution platform with persistent storage, HTTP REST API, automated and manual retries, and an interactive dark-mode web dashboard.
 
 ### Core Implemented Capabilities:
 - [x] **Strongly Typed Job Model**: `JobId`, `JobPriority`, `JobStatus`, microsecond timestamps, attempt tracking, and validation rules.
@@ -28,23 +28,29 @@ TaskMesh is a fully implemented, production-minded C++20 concurrent background j
   - Linearized cancellation protocol: guaranteed pre-execution cancellation (LP 3) & cooperative cancellation (LP 4).
   - Graceful draining (`GracefulDrain`) and immediate purge (`ImmediateStop`).
   - Thread-safe atomic metrics invariant: `submitted == queued + running + completed + failed + cancelled`.
+  - Automatic retry policy with configurable delay and retry metric tracking.
+  - Thread-safe `JobLifecycleCallback` connecting engine state transitions directly to persistence.
 - [x] **Durable Persistent Storage & Crash Recovery (Phase 3)**:
   - High-throughput SQLite store (`SqliteJobStore`) configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL`).
   - Indexed queries on `(status, priority DESC, creation_time ASC)`.
   - Automatic crash recovery on engine startup (`recover_uncompleted_jobs`) requeuing orphaned running jobs.
 - [x] **HTTP REST API & Security (Phase 4)**:
-  - RESTful endpoints for submission, querying, metrics, and cooperative cancellation.
+  - RESTful endpoints for submission, querying, metrics, cooperative cancellation, and manual retrying (`POST /api/v1/jobs/:id/retry`).
+  - Protection against duplicate submissions (`409 Conflict`) and deleting active running jobs (`409 Conflict`).
   - Token-based authentication (`Authorization: Bearer <token>` or `X-API-Key`).
   - Sliding-window IP rate limiting (rejection with HTTP 429 Too Many Requests).
   - Strongly validated JSON payloads using `nlohmann/json`.
 - [x] **Embedded Responsive Web Dashboard (Phase 5)**:
-  - Single-page application served directly from the server binary without external assets.
-  - Live metric gauges, job submission modal, cancellation triggers, and real-time polling.
+  - Single-page application served directly from the server binary without external assets (`src/dashboard_html.cpp`).
+  - Live metric gauges, live client-side search bar, status filter pills (`All`, `Queued`, `Running`, `Completed`, `Failed`, `Cancelled`).
+  - Interactive Job Details Inspector modal (full JSON payload viewer, error banner, action buttons).
+  - In-table quick actions: Inspect, Cancel, Retry, Delete.
+  - Browser-persisted API key management modal with toast feedback.
 - [x] **Production Containerization & CI (Phase 6)**:
   - Multi-stage non-root `Dockerfile` with automated test validation.
   - `docker-compose.yml` with persistent volumes and healthchecks.
   - GitHub Actions CI matrix running Windows MSVC and Ubuntu Linux GCC 13.
-- [x] **67 Automated Tests**: 100% pass rate in both Debug and Release configurations across 7 test suites.
+- [x] **75 Automated Tests**: 100% pass rate in both Debug and Release configurations across 7 test suites.
 
 ---
 
@@ -54,19 +60,25 @@ TaskMesh is a fully implemented, production-minded C++20 concurrent background j
 +-------------------------------------------------------------+
 |                      TaskMesh Architecture                  |
 +-------------------------------------------------------------+
-|  Presentation:                                              |
+|  Presentation & API:                                        |
+|    - taskmesh_server (HTTP REST API + Embedded Dashboard)   |
 |    - taskmesh_cli (Demonstration & Validation Harness)       |
 |                                                             |
-|  Core Domain & Scheduling (taskmesh_core):                  |
+|  Execution & Concurrency:                                   |
+|    - ExecutionEngine: Worker pool & thread management        |
+|    - ConcurrentPriorityQueue: Thread-safe CV synchronization |
+|    - CancellationToken & JobExecutionContext: Cooperative   |
+|                                                             |
+|  Core Domain & Scheduling:                                  |
 |    - Job: Strongly typed domain entity                      |
 |    - JobId: Validated identifier ([a-zA-Z0-9_.-:])          |
 |    - JobPriority: Strict partial ordering wrapper           |
 |    - JobStatus: Lifecycle state machine                     |
 |    - PriorityScheduler: Binary max-heap + Monotonic counter |
-|                                                             |
-|  Execution Abstraction:                                     |
-|    - IJobExecutor: Interface separating queuing from work   |
 |    - InMemoryJobExecutor: Concrete handler dispatch         |
+|                                                             |
+|  Persistence:                                               |
+|    - SqliteJobStore: SQLite3 WAL storage & crash recovery   |
 +-------------------------------------------------------------+
 ```
 
@@ -80,27 +92,47 @@ See [docs/architecture.md](docs/architecture.md) for full architecture specifica
 TaskMesh/
 ├── CMakeLists.txt              # Root build configuration (C++20, MSVC flags)
 ├── CMakePresets.json           # Standardized configure/build/test presets
+├── Dockerfile                  # Multi-stage production container build
+├── docker-compose.yml          # Container compose with persistent volume
+├── fly.toml                    # 24/7 cloud deployment configuration
+├── render.yaml                 # Render infrastructure specification
 ├── README.md                   # Product documentation and project overview
 ├── .gitignore                  # Git ignore rules for CMake and Visual Studio
 ├── docs/
 │   ├── architecture.md         # In-depth architectural specification
-│   └── development.md          # Developer environment & build instructions
+│   ├── deployment.md           # Deployment runbook and hosting options
+│   ├── development.md          # Developer environment & build instructions
+│   └── dsa_design_decisions.md # Mathematical justification of DSA selections
 ├── include/
 │   └── taskmesh/
-│       ├── job.hpp             # Job domain entity, JobId, JobPriority, Builder
-│       ├── job_status.hpp      # JobStatus enum & lifecycle transition validation
-│       ├── priority_scheduler.hpp # In-memory PriorityScheduler interface
-│       └── job_executor.hpp    # IJobExecutor abstraction & InMemoryJobExecutor
+│       ├── cancellation_token.hpp       # Cooperative cancellation primitives
+│       ├── concurrent_priority_queue.hpp# Thread-safe blocking priority queue
+│       ├── execution_engine.hpp         # Worker pool & retry execution engine
+│       ├── job.hpp                      # Job domain entity, JobId, JobPriority, Builder
+│       ├── job_executor.hpp             # IJobExecutor abstraction & InMemoryJobExecutor
+│       ├── job_status.hpp               # JobStatus enum & lifecycle transitions
+│       ├── job_store.hpp                # IJobStore interface & SqliteJobStore
+│       ├── priority_scheduler.hpp       # In-memory PriorityScheduler max-heap
+│       └── server.hpp                   # HTTP server & REST route declarations
 ├── src/
-│   ├── main.cpp                # CLI demonstration executable
-│   ├── job.cpp                 # Domain logic and invariant validations
-│   ├── priority_scheduler.cpp  # Scheduler heap and FIFO tie-breaking logic
-│   └── job_executor.cpp        # Executor dispatch and lifecycle transitions
+│   ├── concurrent_priority_queue.cpp    # Thread-safe queue implementation
+│   ├── dashboard_html.cpp               # Embedded responsive web dashboard SPA
+│   ├── execution_engine.cpp             # Worker pool, retries & cancellation
+│   ├── job.cpp                          # Domain logic and invariant validations
+│   ├── job_executor.cpp                 # Executor dispatch and lifecycle logic
+│   ├── job_store.cpp                    # SQLite persistence & crash recovery
+│   ├── main.cpp                         # CLI demonstration executable
+│   ├── priority_scheduler.cpp           # Scheduler heap and FIFO tie-breaking logic
+│   └── server.cpp                       # REST API, rate limiter & server harness
 └── tests/
-    ├── CMakeLists.txt          # Test configuration with GoogleTest FetchContent
-    ├── job_tests.cpp           # Unit tests for domain models & invariants
-    ├── priority_scheduler_tests.cpp # Priority ordering, FIFO & stress tests
-    └── job_executor_tests.cpp  # Executor handling & lifecycle outcome tests
+    ├── CMakeLists.txt                   # Test configuration with GoogleTest
+    ├── concurrent_queue_tests.cpp       # Thread safety & stress tests
+    ├── execution_engine_tests.cpp       # Worker pool, retries & cancellation tests
+    ├── job_executor_tests.cpp           # Executor handling & lifecycle outcome tests
+    ├── job_store_tests.cpp              # SQLite roundtrip & crash recovery tests
+    ├── job_tests.cpp                    # Unit tests for domain models & invariants
+    ├── priority_scheduler_tests.cpp     # Priority ordering, FIFO & stress tests
+    └── server_tests.cpp                 # REST API, auth, duplicate & retry tests
 ```
 
 ---

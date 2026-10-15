@@ -288,3 +288,100 @@ TEST(ExecutionEngineTest, ConcurrentLoadMetricsInvariantCheck) {
     EXPECT_EQ(final_m.queued, 0);
     EXPECT_EQ(final_m.running, 0);
 }
+
+TEST(ExecutionEngineTest, AutomaticRetryUntilSuccess) {
+    InMemoryJobExecutor executor;
+    std::atomic<int> attempts{0};
+
+    executor.register_handler("flaky", [&attempts](const Job&, const JobExecutionContext&) -> ExecutionResult {
+        int current = attempts.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (current < 3) {
+            return ExecutionResult::error("Temporary transient failure");
+        }
+        return ExecutionResult::ok("Succeeded on attempt 3");
+    });
+
+    ExecutionEngine engine(executor, {.num_workers = 2, .worker_poll_timeout = 20ms});
+
+    Job job = Job::Builder()
+                  .with_id("flaky-job-1")
+                  .with_type("flaky")
+                  .with_max_attempts(3)
+                  .build();
+
+    EXPECT_TRUE(engine.submit(std::move(job)));
+
+    engine.shutdown(ShutdownMode::GracefulDrain);
+    EXPECT_TRUE(engine.wait_until_stopped(2000ms));
+
+    EXPECT_EQ(attempts.load(), 3);
+    const auto m = engine.get_metrics();
+    EXPECT_TRUE(m.check_invariant());
+    EXPECT_EQ(m.submitted, 1);
+    EXPECT_EQ(m.completed, 1);
+    EXPECT_EQ(m.failed, 0);
+    EXPECT_EQ(m.retries, 2);
+}
+
+TEST(ExecutionEngineTest, AutomaticRetryExhaustionMarksFailed) {
+    InMemoryJobExecutor executor;
+    std::atomic<int> attempts{0};
+
+    executor.register_handler("always_fails", [&attempts](const Job&, const JobExecutionContext&) -> ExecutionResult {
+        attempts.fetch_add(1, std::memory_order_relaxed);
+        return ExecutionResult::error("Permanent database connection error");
+    });
+
+    ExecutionEngine engine(executor, {.num_workers = 2, .worker_poll_timeout = 20ms});
+
+    Job job = Job::Builder()
+                  .with_id("failing-job-1")
+                  .with_type("always_fails")
+                  .with_max_attempts(3)
+                  .build();
+
+    EXPECT_TRUE(engine.submit(std::move(job)));
+
+    engine.shutdown(ShutdownMode::GracefulDrain);
+    EXPECT_TRUE(engine.wait_until_stopped(2000ms));
+
+    EXPECT_EQ(attempts.load(), 3);
+    const auto m = engine.get_metrics();
+    EXPECT_TRUE(m.check_invariant());
+    EXPECT_EQ(m.submitted, 1);
+    EXPECT_EQ(m.completed, 0);
+    EXPECT_EQ(m.failed, 1);
+    EXPECT_EQ(m.retries, 2);
+}
+
+TEST(ExecutionEngineTest, LifecycleCallbackObservesAllTransitions) {
+    InMemoryJobExecutor executor;
+    executor.register_handler("tracked", [](const Job&, const JobExecutionContext&) {
+        return ExecutionResult::ok();
+    });
+
+    ExecutionEngine engine(executor, {.num_workers = 1, .worker_poll_timeout = 20ms});
+
+    std::vector<JobStatus> recorded_statuses;
+    std::mutex recorded_mutex;
+
+    engine.set_lifecycle_callback([&](const Job&, JobStatus new_status, const std::string&) {
+        std::lock_guard<std::mutex> lock(recorded_mutex);
+        recorded_statuses.push_back(new_status);
+    });
+
+    Job job = Job::Builder()
+                  .with_id("tracked-1")
+                  .with_type("tracked")
+                  .build();
+
+    EXPECT_TRUE(engine.submit(std::move(job)));
+
+    engine.shutdown(ShutdownMode::GracefulDrain);
+    EXPECT_TRUE(engine.wait_until_stopped(2000ms));
+
+    std::lock_guard<std::mutex> lock(recorded_mutex);
+    ASSERT_GE(recorded_statuses.size(), 2u);
+    EXPECT_EQ(recorded_statuses[0], JobStatus::Running);
+    EXPECT_EQ(recorded_statuses[1], JobStatus::Completed);
+}

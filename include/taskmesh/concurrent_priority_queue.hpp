@@ -35,6 +35,12 @@ public:
     void push(Job job);
 
     /**
+     * @brief Thread-safe re-enqueue for retries during active or draining states.
+     * @throws std::runtime_error only if the queue is closed (ImmediateStop).
+     */
+    void push_retry(Job job);
+
+    /**
      * @brief Non-blocking pop.
      */
     [[nodiscard]] std::optional<Job> try_pop();

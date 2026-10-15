@@ -1,5 +1,6 @@
 #include "taskmesh/execution_engine.hpp"
 
+#include <iostream>
 #include <stdexcept>
 
 namespace taskmesh {
@@ -178,6 +179,10 @@ EngineMetrics ExecutionEngine::get_metrics() const {
     return metrics_;
 }
 
+void ExecutionEngine::set_lifecycle_callback(JobLifecycleCallback callback) {
+    lifecycle_callback_ = std::move(callback);
+}
+
 size_t ExecutionEngine::worker_count() const noexcept {
     return config_.num_workers;
 }
@@ -191,8 +196,18 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
         // Check lifecycle status
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-            if (stopped_ || (!running_ && queue_.empty())) {
+            if (stopped_) {
                 break;
+            }
+            if (!running_) {
+                bool has_active_work = false;
+                {
+                    std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+                    has_active_work = (metrics_.running > 0) || (metrics_.queued > 0);
+                }
+                if (!has_active_work && queue_.empty()) {
+                    break;
+                }
             }
         }
 
@@ -200,8 +215,18 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
         auto job_opt = queue_.pop_wait(config_.worker_poll_timeout);
         if (!job_opt.has_value()) {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-            if ((draining_ || !running_) && queue_.empty()) {
+            if (stopped_) {
                 break;
+            }
+            if (draining_ || !running_) {
+                bool has_active_work = false;
+                {
+                    std::lock_guard<std::mutex> m_lock(metrics_mutex_);
+                    has_active_work = (metrics_.running > 0) || (metrics_.queued > 0);
+                }
+                if (!has_active_work && queue_.empty()) {
+                    break;
+                }
             }
             continue;
         }
@@ -241,11 +266,25 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
                 metrics_.running--;
                 metrics_.cancelled++;
             }
+            if (lifecycle_callback_) {
+                try { lifecycle_callback_(job, JobStatus::Cancelled, "Cancelled prior to execution start."); } catch (...) {}
+            }
             continue;
+        }
+
+        try {
+            if (job.status() != JobStatus::Running) {
+                job.mark_running();
+            }
+        } catch (...) {}
+
+        if (lifecycle_callback_) {
+            try { lifecycle_callback_(job, JobStatus::Running, ""); } catch (...) {}
         }
 
         // Create execution context
         JobExecutionContext ctx(cancel_source->get_token(), worker_id);
+        const size_t prev_attempts = job.attempt_count();
 
         // Execute handler WITHOUT holding ANY locks
         ExecutionResult result;
@@ -257,44 +296,99 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
             result = ExecutionResult::error("Unhandled unknown exception in handler.");
         }
 
-        // Enforce valid terminal state even if custom executor did not mark it
-        if (job.status() == JobStatus::Running) {
-            if (ctx.is_cancellation_requested()) {
-                job.mark_cancelled("Execution cancelled.");
-            } else if (result.success) {
-                job.mark_completed();
-            } else {
-                job.mark_failed(result.message.empty() ? "Execution failed" : result.message);
-            }
-        } else if (job.status() == JobStatus::Queued || job.status() == JobStatus::Pending) {
-            if (ctx.is_cancellation_requested()) {
-                job.mark_cancelled("Execution cancelled.");
-            } else if (result.success) {
-                try {
-                    job.mark_running();
-                    job.mark_completed();
-                } catch (...) {}
-            } else {
-                job.mark_failed(result.message.empty() ? "Execution failed" : result.message);
-            }
+        // Ensure attempt count was tracked even if legacy executor didn't call increment
+        if (job.attempt_count() == prev_attempts && job.attempt_count() < job.max_attempts()) {
+            try { job.increment_attempt_count(); } catch (...) {}
         }
 
-        // LP 4: Terminal commitment
-        {
-            std::lock_guard<std::mutex> lock(jobs_mutex_);
-            running_jobs_.erase(id);
-            terminal_jobs_.insert(id);
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(metrics_mutex_);
-            metrics_.running--;
-            if (job.status() == JobStatus::Completed) {
-                metrics_.completed++;
-            } else if (job.status() == JobStatus::Cancelled) {
+        // Process execution outcome
+        if (ctx.is_cancellation_requested()) {
+            job.mark_cancelled("Execution cancelled.");
+            {
+                std::lock_guard<std::mutex> lock(jobs_mutex_);
+                running_jobs_.erase(id);
+                terminal_jobs_.insert(id);
+            }
+            {
+                std::lock_guard<std::mutex> lock(metrics_mutex_);
+                metrics_.running--;
                 metrics_.cancelled++;
-            } else {
-                metrics_.failed++;
+            }
+            if (lifecycle_callback_) {
+                try { lifecycle_callback_(job, JobStatus::Cancelled, "Execution cancelled."); } catch (...) {}
+            }
+        } else if (result.success) {
+            job.mark_completed();
+            {
+                std::lock_guard<std::mutex> lock(jobs_mutex_);
+                running_jobs_.erase(id);
+                terminal_jobs_.insert(id);
+            }
+            {
+                std::lock_guard<std::mutex> lock(metrics_mutex_);
+                metrics_.running--;
+                metrics_.completed++;
+            }
+            if (lifecycle_callback_) {
+                try { lifecycle_callback_(job, JobStatus::Completed, result.message); } catch (...) {}
+            }
+        } else {
+            // Execution failed
+            std::string err = result.message.empty() ? "Execution failed" : result.message;
+            job.mark_failed(err);
+
+            const bool can_retry = (job.attempt_count() < job.max_attempts()) && config_.auto_retry;
+            bool retry_pushed = false;
+            if (can_retry) {
+                // Re-enqueue for retry
+                {
+                    std::lock_guard<std::mutex> lock(jobs_mutex_);
+                    running_jobs_.erase(id);
+                }
+
+                job.mark_queued();
+
+                if (config_.retry_delay.count() > 0) {
+                    std::this_thread::sleep_for(config_.retry_delay);
+                }
+
+                try {
+                    queue_.push_retry(job);
+                    retry_pushed = true;
+
+                    {
+                        std::lock_guard<std::mutex> lock(metrics_mutex_);
+                        metrics_.running--;
+                        metrics_.queued++;
+                        metrics_.retries++;
+                    }
+
+                    if (lifecycle_callback_) {
+                        std::string msg = "Retry scheduled (attempt " + std::to_string(job.attempt_count()) + "/" + std::to_string(job.max_attempts()) + "): " + err;
+                        try { lifecycle_callback_(job, JobStatus::Queued, msg); } catch (...) {}
+                    }
+                } catch (...) {
+                    retry_pushed = false;
+                }
+            }
+
+            if (!retry_pushed) {
+                // Attempts exhausted: final terminal commitment
+                {
+                    std::lock_guard<std::mutex> lock(jobs_mutex_);
+                    running_jobs_.erase(id);
+                    terminal_jobs_.insert(id);
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(metrics_mutex_);
+                    metrics_.running--;
+                    metrics_.failed++;
+                }
+
+                if (lifecycle_callback_) {
+                    try { lifecycle_callback_(job, JobStatus::Failed, err); } catch (...) {}
+                }
             }
         }
     }

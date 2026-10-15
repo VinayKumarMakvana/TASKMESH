@@ -1,36 +1,38 @@
-# TaskMesh Architecture Specification (Phase 1)
+# TaskMesh Architecture Specification
 
 ## 1. Overview and Design Philosophy
 
-TaskMesh is an asynchronous job-processing platform designed for mission-critical background task execution. Phase 1 establishes the core in-memory engineering foundation: a strongly typed domain model, an in-memory priority scheduler with deterministic FIFO tie-breaking, an execution abstraction decoupling scheduling from execution, and an automated test suite.
+**TaskMesh** is a high-performance, concurrent background job-processing platform written in modern C++20. It provides deterministic priority scheduling, microsecond-accurate lifecycle tracking, cooperative task cancellation, automatic and manual retries, persistent SQLite storage with crash recovery, a secure HTTP REST API, and an embedded responsive web dashboard.
 
 The architecture emphasizes:
-- **Correctness Before Features**: No premature distributed claims; core algorithmic correctness is rigorously proven first.
-- **Problem-Driven DSA Selection**: Every data structure and algorithm is selected according to operational requirements, cache characteristics, and complexity trade-offs, fully documented in [docs/dsa_design_decisions.md](dsa_design_decisions.md).
-- **Explicit Domain Modeling**: All entity identifiers, status transitions, and priority values are strictly typed and validated at construction and mutation boundaries.
-- **Predictable Complexity**: Strict $O(\log N)$ enqueue/dequeue guarantees with cache-friendly contiguous vector backing.
-- **Resource Safety**: Complete RAII compliance and zero manual memory management.
+- **Correctness and Determinism**: Array-backed binary max-heap with 64-bit monotonic sequence numbers guarantees strict FIFO dequeue ordering for equal-priority tasks.
+- **Problem-Driven DSA Selection**: Every data structure and algorithm is chosen based on operational requirements, cache locality, and complexity trade-offs (detailed in [docs/dsa_design_decisions.md](dsa_design_decisions.md)).
+- **Concurrency & Resource Safety**: RAII ownership, modern `std::jthread` worker threads with cooperative `CancellationToken`, condition-variable synchronization, and strict exception isolation.
+- **Durable Persistence & Crash Recovery**: Embedded SQLite with Write-Ahead Logging (`WAL`), ACID transaction guarantees, and automatic recovery of interrupted jobs upon server restart.
+- **Self-Contained Embedded Operations**: The complete REST API, SQLite storage, and responsive web dashboard are compiled into a standalone native binary with zero external runtime dependencies.
 
 ---
 
-## 2. Component Dependency Graph
+## 2. Component Architecture Graph
 
 ```mermaid
 graph TD
-    CLI[taskmesh_cli] --> Core[taskmesh_core]
-    Tests[taskmesh_tests] --> Core
-    Tests --> GTest[GoogleTest / GTest::gtest_main]
+    Client[Web Browser / API Client] -->|HTTP / JSON| Server[TaskMeshServer]
+    Server -->|Auth & Rate Limit| RouteDispatch[Route Dispatcher]
+    RouteDispatch -->|Embedded UI| Dashboard[Dashboard HTML/JS/CSS]
+    RouteDispatch -->|CRUD / History| JobStore[SqliteJobStore]
+    RouteDispatch -->|Submit / Cancel / Retry| Engine[ExecutionEngine]
 
-    subgraph taskmesh_core
-        JobStatus[job_status.hpp]
-        Job[job.hpp / job.cpp]
-        Scheduler[priority_scheduler.hpp / priority_scheduler.cpp]
-        Executor[job_executor.hpp / job_executor.cpp]
-
-        Job --> JobStatus
-        Scheduler --> Job
-        Executor --> Job
+    subgraph Core Engine
+        Engine -->|Thread-Safe Enqueue / Dequeue| Queue[ConcurrentPriorityQueue]
+        Engine -->|Worker Threads std::jthread| Workers[Worker Pool]
+        Workers -->|Handler Dispatch| Executor[InMemoryJobExecutor]
+        Executor -->|Cooperative Context| CToken[CancellationToken]
+        Workers -->|Lifecycle Callbacks| Engine
     end
+
+    Engine -.->|Sync Status & Attempts| JobStore
+    JobStore -->|SQLite3 WAL| Disk[(taskmesh.db)]
 ```
 
 ---
@@ -38,7 +40,7 @@ graph TD
 ## 3. Domain Model Architecture
 
 ### 3.1 Job Identifier (`JobId`)
-- Encapsulates string identifiers.
+- Strongly typed value object wrapping `std::string`.
 - **Validation Invariants**:
   - Length: $1 \le \text{length} \le 128$.
   - Character set: Alphanumeric characters `[a-zA-Z0-9]` and safe punctuation `[-_.:]`.
@@ -47,7 +49,7 @@ graph TD
 
 ### 3.2 Job Priority (`JobPriority`)
 - Strongly typed priority wrapper over `int32_t`.
-- Predefined standards:
+- Standard levels:
   - `Low` (10)
   - `Normal` (50) — default
   - `High` (100)
@@ -56,42 +58,42 @@ graph TD
 
 ### 3.3 Lifecycle State Machine (`JobStatus`)
 
-The job lifecycle transitions through a directed state graph. Illegal transitions throw `JobValidationError`.
+The job lifecycle transitions through a strictly validated directed state graph. Illegal transitions throw `JobValidationError`.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending : Creation
-    Pending --> Queued : scheduler.enqueue()
+    Pending --> Queued : scheduler.enqueue() / engine.submit()
     Pending --> Cancelled : user cancellation
-    Queued --> Running : executor.execute()
-    Queued --> Cancelled : cancellation
-    Running --> Completed : success (terminal)
-    Running --> Failed : error (attempts < max: retryable)
-    Running --> Cancelled : cancellation (terminal)
-    Failed --> Queued : retry re-enqueue
-    Failed --> Cancelled : cancellation (terminal)
+    Queued --> Running : worker claim
+    Queued --> Cancelled : cancellation before claim
+    Running --> Completed : handler success (terminal)
+    Running --> Failed : error (attempts >= max: terminal)
+    Running --> Queued : auto-retry (attempts < max)
+    Running --> Cancelled : cooperative cancellation (terminal)
+    Failed --> Queued : manual API retry (resets attempts to 0)
     Completed --> [*]
     Cancelled --> [*]
 ```
 
 #### Valid Transitions:
-| From State | Permitted Target States | Notes |
+| From State | Permitted Target States | Description / Trigger |
 |:---|:---|:---|
-| `Pending` | `Queued`, `Cancelled` | Cannot jump straight to `Completed` or `Running`. |
-| `Queued` | `Running`, `Cancelled` | Selected by worker executor. |
-| `Running` | `Completed`, `Failed`, `Cancelled` | Execution outcome. |
-| `Failed` | `Queued`, `Cancelled` | May only re-queue if `attempt_count < max_attempts`. |
-| `Completed` | *None* | Permanent terminal state. |
-| `Cancelled` | *None* | Permanent terminal state. |
+| `Pending` | `Queued`, `Cancelled` | Initial state upon builder construction. |
+| `Queued` | `Running`, `Cancelled` | Awaiting worker claim; can be cancelled pre-execution. |
+| `Running` | `Completed`, `Failed`, `Cancelled`, `Queued` | Executed by worker; moves to `Queued` on auto-retry. |
+| `Failed` | `Queued`, `Cancelled` | Terminal failure; can be manually re-queued via `/api/v1/jobs/:id/retry`. |
+| `Completed` | *None* | Permanent terminal state. Cannot be retried or transitioned. |
+| `Cancelled` | *None* | Permanent terminal state. Cannot be cancelled again. |
 
 ---
 
-## 4. Priority Scheduler (`PriorityScheduler`)
+## 4. Deterministic Priority Scheduling
 
-### 4.1 Algorithmic Design
-The scheduler is an in-memory priority queue structured around `std::priority_queue` backed by `std::vector`:
+### 4.1 In-Memory Max-Heap & Monotonic Sequence Counter
+The core scheduling data structure is a binary max-heap (`std::priority_queue`) backed by a contiguous `std::vector`:
 - **Max-Heap Property**: Jobs with higher `JobPriority` values migrate to the root.
-- **Deterministic FIFO Tie-Breaking**: Standard binary heaps are not stable. To enforce FIFO ordering among equal-priority jobs, each enqueued entry is tagged with a monotonic 64-bit sequence counter `sequence_counter_`.
+- **Deterministic FIFO Tie-Breaking**: Standard binary heaps are unstable. To enforce FIFO ordering among equal-priority jobs, each enqueued entry is tagged with a monotonic 64-bit sequence counter `sequence_counter_`.
 - **Comparator Semantics**:
   ```cpp
   if (lhs.job.priority() != rhs.job.priority()) {
@@ -101,70 +103,134 @@ The scheduler is an in-memory priority queue structured around `std::priority_qu
   ```
 
 ### 4.2 Time and Space Complexity
-
 | Operation | Time Complexity | Space Complexity | Description |
 |:---|:---:|:---:|:---|
 | `enqueue(Job)` | $O(\log N)$ | $O(1)$ amortized | Pushes into max-heap; increments sequence counter. |
 | `dequeue()` | $O(\log N)$ | $O(1)$ | Extracts top element and reheapifies. |
-| `peek()` / `peek_ptr()` | $O(1)$ | $O(1)$ | Inspects the root element without removing it. |
+| `peek()` | $O(1)$ | $O(1)$ | Inspects the root element without removing it. |
 | `size()` | $O(1)$ | $O(1)$ | Returns count of pending jobs. |
-| `empty()` | $O(1)$ | $O(1)$ | Checks if size is zero. |
 | `clear()` | $O(N)$ | $O(1)$ | Drains queue and resets sequence counter to zero. |
 
-- **Total Memory Footprint**: $O(N)$ contiguous storage inside the underlying `std::vector`, maximizing CPU cache locality.
-
-### 4.3 Monotonic Sequence Counter & Overflow Safety
-- Uses `uint64_t`.
-- Maximum value: $2^{64}-1 \approx 18,446,744,073,709,551,615$.
-- Under sustained load of 1,000,000,000 jobs enqueued per second, the counter will operate continuously for:
-  $$\frac{1.844 \times 10^{19}}{10^9 \times 86400 \times 365.25} \approx 584.5 \text{ years}$$
-- If the counter ever reaches `std::numeric_limits<uint64_t>::max()`, `enqueue()` throws `std::overflow_error`, preventing silent wrap-around that would violate the FIFO invariant.
-
-### 4.4 Thread Safety Boundary
-> [!IMPORTANT]
-> The Phase 1 `PriorityScheduler` is intentionally single-threaded and **not** thread-safe.
-> Concurrent access without external synchronization produces data races. Thread-safe concurrent queues with condition variables and reader/writer synchronization are slated for Phase 2.
+### 4.3 Concurrent Thread-Safe Queue (`ConcurrentPriorityQueue`)
+Wraps the priority scheduler with concurrency primitives:
+- **Synchronization**: `std::mutex` and `std::condition_variable`.
+- **Blocking Waits**: `pop_wait(timeout)` allows worker threads to sleep efficiently without busy-waiting.
+- **Graceful Shutdown**: `close(graceful=true)` prevents new external submissions while allowing workers to drain existing queued jobs and enqueue retry attempts (`push_retry`).
+- **Immediate Purge**: `drain_all()` extracts all pending jobs for rapid teardown.
 
 ---
 
-## 5. Execution Abstraction (`IJobExecutor`)
+## 5. Concurrent Worker Execution Engine
 
-To avoid coupling scheduling with job logic, `IJobExecutor` provides an execution contract:
+### 5.1 Worker Pool (`ExecutionEngine`)
+- Configurable pool of worker threads managed with `std::jthread`.
+- Workers pop jobs from `ConcurrentPriorityQueue`, claim them, and dispatch them to the configured `IJobExecutor`.
+- **Exception Isolation**: Worker loops catch all standard and unexpected exceptions thrown by job handlers, preventing individual job failures from crashing the engine.
 
-```cpp
-class IJobExecutor {
-public:
-    virtual ~IJobExecutor() = default;
-    [[nodiscard]] virtual ExecutionResult execute(Job& job) = 0;
-};
-```
+### 5.2 Linearized Cancellation Protocol
+Cancellation guarantees clear linear semantics across lifecycle states:
+1. **Pre-Execution Cancellation**: If a job is cancelled while in `Queued` status, the worker inspects the cancellation token before invoking the handler, marks the job `Cancelled` immediately, and skips handler execution.
+2. **Cooperative In-Execution Cancellation**: Running handlers periodically poll `JobExecutionContext::is_cancellation_requested()`. Upon observing the signal, handlers abort cleanly and return `ExecutionResult::cancelled(...)`.
+3. **Post-Terminal Rejection**: Cancelling a job that has already completed or failed returns `false` / `409 Conflict`.
 
-- **`InMemoryJobExecutor`**:
-  - Implements `IJobExecutor`.
-  - Rejects jobs that are not in an executable status (`Pending` or `Queued`), or that have reached their attempt limit, returning a well-defined `ExecutionResult::error` without mutating the job's state or attempt count.
-  - Supports registering type-specific handlers (`register_handler(type, fn)`).
-  - Provides a fallback default handler.
-  - Automatically manages lifecycle transitions (`Queued` $\to$ `Running` $\to$ `Completed` / `Failed`).
-  - Increments `attempt_count` and measures wall-clock execution duration.
-  - Catches standard and non-standard exceptions thrown by handlers and marks the job failed with detailed error context.
-  - Guarantees metrics consistency: `executed_count() == successful_count() + failed_count()`.
+### 5.3 Automated & Manual Retries
+- **Automatic Engine Retries**: If `ExecutionEngineConfig.auto_retry` is enabled and a job fails with `attempt_count < max_attempts`, the engine automatically re-enqueues the job with an optional backoff delay.
+- **Manual REST API Retries**: For jobs in `Failed` or `Cancelled` states, clients can trigger `POST /api/v1/jobs/:id/retry`, resetting the attempt counter to 0 and re-submitting to the scheduler.
+
+### 5.4 Thread-Safe Metrics Invariant
+The engine maintains strict atomic metrics satisfying the invariant at all times:
+$$\text{submitted} = \text{queued} + \text{running} + \text{completed} + \text{failed} + \text{cancelled}$$
+Engine metrics also track total execution retries without violating the job state balance.
 
 ---
 
-## 6. Error Handling Strategy
+## 6. Durable Storage & Crash Recovery
 
-TaskMesh uses explicit, non-silent error handling:
-1. **`JobValidationError`** (inherits from `std::invalid_argument`):
-   - Thrown upon empty or malformed `JobId`.
-   - Thrown upon empty job type.
-   - Thrown upon invalid `max_attempts` ($< 1$).
-   - Thrown upon attempt count exceeding maximum attempts.
-   - Thrown upon invalid lifecycle transitions.
-   - Thrown upon enqueuing terminal (`Completed`, `Cancelled`) or `Running` jobs.
-   - Thrown upon enqueuing a `Failed` job that has exhausted all retry attempts (`!job.can_retry()`).
-2. **`std::overflow_error`**:
-   - Thrown if the scheduler's 64-bit sequence counter saturates.
-3. **Safe Nil-Returns**:
-   - Querying or dequeuing an empty queue returns `std::nullopt` or `nullptr` without throwing, avoiding exceptions for ordinary control flow.
-4. **Executor Rejections**:
-   - Jobs not eligible for execution (terminal status or exhausted attempt count) return `ExecutionResult::error` with original job state preserved.
+### 6.1 SQLite Database Schema (`SqliteJobStore`)
+Persistent job metadata and history are stored in an embedded SQLite database configured with Write-Ahead Logging:
+- **`PRAGMA journal_mode = WAL;`**: Allows concurrent readers without blocking writes.
+- **`PRAGMA synchronous = NORMAL;`**: Balances durability with high transaction throughput.
+- **Schema**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      status INTEGER NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      error_details TEXT,
+      creation_time INTEGER NOT NULL,
+      scheduled_time INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jobs_status_prio ON jobs(status, priority DESC, creation_time ASC);
+  ```
+
+### 6.2 Crash Recovery
+When `TaskMeshServer` starts:
+1. `SqliteJobStore::recover_uncompleted_jobs()` inspects the database for jobs left in `Running` state from a prior crash or abrupt termination.
+2. If `job.can_retry()` is true, the job is transitioned back to `Queued` and scheduled into the execution engine.
+3. If attempts are exhausted, the job is marked `Failed` with reason `"Server process terminated during execution"`.
+4. All existing `Queued` jobs are re-enqueued into the engine's priority queue in correct priority/FIFO order.
+
+---
+
+## 7. HTTP REST API & Security
+
+### 7.1 Server Architecture (`TaskMeshServer`)
+Built on `cpp-httplib` with JSON serialization via `nlohmann/json`.
+
+### 7.2 Security & Rate Limiting
+- **Authentication**: All mutation endpoints require an API token passed via `Authorization: Bearer <token>` or `X-API-Key: <token>`. Configurable via CLI argument or `TASKMESH_API_KEY` environment variable.
+- **Sliding-Window IP Rate Limiting**: Tracks requests per client IP address. Exceeding `rate_limit_per_minute` immediately yields `HTTP 429 Too Many Requests`.
+
+### 7.3 REST Endpoints
+
+| Method | Endpoint | Auth | Description |
+|:---|:---|:---:|:---|
+| `GET` | `/health` | No | Liveness probe returning `200 OK` and uptime. |
+| `GET` | `/ready` | No | Readiness probe verifying SQLite database connectivity. |
+| `GET` | `/` or `/dashboard` | No | Serves embedded single-page responsive web dashboard. |
+| `POST` | `/api/v1/jobs` | Yes | Submit new job. Returns `201 Created` or `409 Conflict` (duplicate ID). |
+| `GET` | `/api/v1/jobs` | No | List jobs with optional `?status=`, `?limit=`, and `?offset=`. |
+| `GET` | `/api/v1/jobs/:id` | No | Retrieve detailed status, payload, attempts, and errors for a job. |
+| `POST` | `/api/v1/jobs/:id/cancel` | Yes | Cancel queued or running job. Returns `409` if already terminal. |
+| `POST` | `/api/v1/jobs/:id/retry` | Yes | Re-queue failed or cancelled job with reset attempts. Returns `409` if running/completed. |
+| `DELETE` | `/api/v1/jobs/:id` | Yes | Delete job record. Protected against deleting active `Running` jobs (`409`). |
+| `GET` | `/api/v1/metrics` | No | Live engine metrics snapshot with invariant validation flag. |
+| `GET` | `/api/v1/stats` | No | Database job distribution counts grouped by status. |
+
+---
+
+## 8. Embedded Responsive Web Dashboard
+
+The web dashboard is served directly from the compiled binary via `src/dashboard_html.cpp`:
+- **Zero External Dependencies**: All CSS, SVG icons, and JavaScript logic are self-contained.
+- **Modern Glassmorphic Dark UI**: Curated color palette (emerald, violet, amber, rose) with subtle card elevations, micro-animations, and responsive layouts for mobile and desktop screens.
+- **Live Metric Gauges**: Dynamically animated cards displaying Submitted, Queued, Running, Completed, Failed, and Cancelled counts.
+- **Live Search & Filter**: Real-time client-side search by Job ID, type, payload, or error message, paired with status filter pills (`All`, `Queued`, `Running`, `Completed`, `Failed`, `Cancelled`).
+- **Job Submission Modal**: Form with automatic UUID generation, preset payload templates, priority selector (`Low`, `Normal`, `High`, `Critical`), and max attempts configuration.
+- **Interactive Job Details Inspector**: Full JSON payload viewer, error details banner, attempt progress, and one-click action buttons.
+- **In-Table Contextual Actions**: Quick actions to Inspect, Cancel (queued/running), Retry (failed/cancelled), or Delete (terminal jobs).
+- **Persistent API Key Management**: Modal saving API credentials into browser `localStorage`, automatically attaching authentication headers to all requests.
+- **Toast Notifications**: Non-intrusive animated notifications for all user operations.
+
+---
+
+## 9. Verification & Test Suite Summary
+
+TaskMesh is validated through 75 automated tests across 7 distinct GoogleTest suites running in both Debug and Release configurations on MSVC C++20:
+
+| Test Suite | Test Count | Focus Area |
+|:---|:---:|:---|
+| `JobTest` | 14 | Domain entity validation, ID character rules, priority ordering, attempt limits, and lifecycle transitions. |
+| `PrioritySchedulerTest` | 13 | Binary heap max-priority scheduling, monotonic 64-bit FIFO tie-breaking, empty handling, and queue clearing. |
+| `JobExecutorTest` | 9 | Handler dispatch, error handling, lifecycle transitions, terminal job rejection, attempt exhaustion, and metric consistency. |
+| `ConcurrentPriorityQueueTest` | 6 | Thread-safe push/pop, timed waiting, graceful draining, immediate purge, and multi-producer multi-consumer concurrency stress. |
+| `ExecutionEngineTest` | 11 | Worker pool dispatch, pre-execution cancellation, cooperative cancellation, terminal cancellation rejection, graceful shutdown, handler exception isolation, load invariant checking, automatic retries, and lifecycle callbacks. |
+| `SqliteJobStoreTest` | 6 | Database roundtrip, status updates, pagination/filtering, crash recovery of interrupted jobs, exhausted attempt handling, and record deletion. |
+| `TaskMeshServerTest` | 16 | Liveness/readiness probes, metrics invariant API, token authentication, payload validation, lifecycle HTTP roundtrips, duplicate ID conflict (`409`), manual retries, completed retry rejection (`409`), active job deletion guards (`409`), and retry attempt reset persistence. |
+| **Total** | **75** | **100% Pass Rate in both Debug and Release builds** |
