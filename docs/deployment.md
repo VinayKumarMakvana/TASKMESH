@@ -181,19 +181,52 @@ The repository includes a ready-to-deploy [`fly.toml`](../fly.toml) preconfigure
 
 | Endpoint | Method | Auth Required | Purpose |
 |---|---|---|---|
-| `/health` | `GET` | No | Liveness probe (returns status, uptime, version) |
-| `/ready` | `GET` | No | Readiness probe (verifies database read/write access) |
-| `/api/v1/metrics` | `GET` | No | Real-time queue and worker execution metrics |
+| `/health` | `GET` | No | Liveness probe (returns status, uptime, worker count) |
+| `/ready` | `GET` | No | Readiness probe (verifies database read/write access and queue health) |
+| `/api/v1/metrics` | `GET` | No | Real-time queue and worker execution metrics (submitted, queued, running, completed, failed, cancelled) |
 | `/api/v1/stats` | `GET` | No | Aggregate database job counts by status |
-| `/api/v1/jobs` | `GET` | Yes | List jobs with optional status filter & pagination |
-| `/api/v1/jobs` | `POST` | Yes | Submit a new background job with priority & payload |
-| `/api/v1/jobs/:id` | `GET` | Yes | Inspect specific job state, result, and attempts |
-| `/api/v1/jobs/:id/cancel` | `POST` | Yes | Cooperatively cancel a queued or running job |
-| `/` or `/dashboard` | `GET` | No | Interactive dark-mode web monitoring dashboard |
+| `/api/v1/jobs` | `GET` | No | List jobs with optional status filter, limit, and offset |
+| `/api/v1/jobs` | `POST` | **Yes** | Schedule a new background job with priority, attempts, and payload |
+| `/api/v1/jobs/:id` | `GET` | No | Inspect specific job state, result, and attempts |
+| `/api/v1/jobs/:id/cancel` | `POST` | **Yes** | Cooperatively cancel an active (Queued or Running) job |
+| `/api/v1/jobs/:id/retry` | `POST` | **Yes** | Re-queue a Failed or Cancelled job for retry |
+| `/api/v1/jobs/:id` | `DELETE` | **Yes** | Permanently delete a terminal (Completed, Failed, Cancelled) job record |
+| `/` or `/dashboard` | `GET` | No | Interactive dark-mode web monitoring dashboard SPA |
 
 ---
 
-## 6. Crash Recovery & Resilience Guarantees
+## 6. Backup and Recovery Procedures
+
+### SQLite Online Hot Backup (Zero Downtime)
+Because TaskMesh runs SQLite in WAL mode (`PRAGMA journal_mode=WAL`), you can create a consistent online backup while the server is running without blocking reads or writes:
+
+```bash
+# On the host (or inside the container):
+sqlite3 /data/taskmesh.db ".backup /data/taskmesh_backup_$(date +%Y%m%d_%H%M%S).db"
+```
+
+### Database Restore Procedure
+1. Stop the TaskMesh service or container:
+   ```bash
+   docker stop taskmesh
+   ```
+2. Replace `/data/taskmesh.db` with your verified backup:
+   ```bash
+   cp /backups/taskmesh_backup.db /data/taskmesh.db
+   rm -f /data/taskmesh.db-wal /data/taskmesh.db-shm
+   ```
+3. Ensure file ownership belongs to non-root user `taskmesh`:
+   ```bash
+   chown taskmesh:taskmesh /data/taskmesh.db
+   ```
+4. Restart the TaskMesh service or container:
+   ```bash
+   docker start taskmesh
+   ```
+
+---
+
+## 7. Crash Recovery & Resilience Guarantees
 
 1. **Write-Ahead Logging (WAL)**: SQLite uses WAL mode (`PRAGMA journal_mode=WAL`) ensuring high-concurrency read/write throughput and crash durability.
 2. **Orphaned Job Recovery**: If the server process or host terminates unexpectedly while jobs are in `Running` state:

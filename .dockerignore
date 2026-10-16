@@ -20,3 +20,4 @@ lib/
 # Environment files with secrets
 .env
 .env.*
+!.env.example
