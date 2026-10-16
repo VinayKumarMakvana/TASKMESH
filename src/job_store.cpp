@@ -367,16 +367,41 @@ std::vector<Job> SqliteJobStore::recover_uncompleted_jobs() {
     return queued_jobs;
 }
 
-bool SqliteJobStore::delete_job(const JobId& id) {
+bool SqliteJobStore::delete_job(const JobId& id, bool only_terminal) {
     std::lock_guard<std::mutex> lock(db_mutex_);
 
-    const char* sql = "DELETE FROM jobs WHERE id = ?;";
+    // When only_terminal is true, atomically delete only if status is Completed(3), Failed(4), or Cancelled(5).
+    // Active jobs (Pending=0, Queued=1, Running=2) cannot be deleted.
+    const char* sql = only_terminal
+        ? "DELETE FROM jobs WHERE id = ? AND status IN (3, 4, 5);"
+        : "DELETE FROM jobs WHERE id = ?;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         return false;
     }
 
     sqlite3_bind_text(stmt, 1, id.value().c_str(), -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    int changes = sqlite3_changes(db_);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) && (changes > 0);
+}
+
+bool SqliteJobStore::reset_job_for_retry(const JobId& id) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+
+    // Atomically transition from Failed (4) or Cancelled (5) to Queued (1)
+    // Active (Queued/Running) or Completed jobs cannot be retried.
+    const char* sql = "UPDATE jobs SET status = 1, error_details = NULL, attempt_count = 0, updated_at = ? WHERE id = ? AND status IN (4, 5);";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, now_epoch_ms());
+    sqlite3_bind_text(stmt, 2, id.value().c_str(), -1, SQLITE_TRANSIENT);
+
     int rc = sqlite3_step(stmt);
     int changes = sqlite3_changes(db_);
     sqlite3_finalize(stmt);

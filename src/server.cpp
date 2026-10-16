@@ -232,6 +232,8 @@ void TaskMeshServer::setup_routes() {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
+        res.set_header("X-Content-Type-Options", "nosniff");
+        res.set_header("X-Frame-Options", "DENY");
 
         if (req.method == "OPTIONS") {
             res.status = 204;
@@ -505,15 +507,22 @@ void TaskMeshServer::setup_routes() {
             return;
         }
 
-        if (existing->status() == JobStatus::Running) {
+        if (existing->status() != JobStatus::Failed && existing->status() != JobStatus::Cancelled) {
             res.status = 409;
-            res.set_content(json{{"error", "Cannot retry a job that is currently running."}}.dump(), "application/json");
+            res.set_content(json{{"error", "Only Failed or Cancelled jobs can be retried."}}.dump(), "application/json");
             return;
         }
 
-        if (existing->status() == JobStatus::Completed) {
+        if (engine_.is_job_active(id)) {
             res.status = 409;
-            res.set_content(json{{"error", "Job is already completed. Submit a new job instead."}}.dump(), "application/json");
+            res.set_content(json{{"error", "Cannot retry a job that is currently active or queued in the engine."}}.dump(), "application/json");
+            return;
+        }
+
+        // Atomically transition SQLite record from Failed/Cancelled to Queued (with 0 attempts)
+        if (!store_->reset_job_for_retry(id)) {
+            res.status = 409;
+            res.set_content(json{{"error", "Only Failed or Cancelled jobs can be retried."}}.dump(), "application/json");
             return;
         }
 
@@ -527,16 +536,9 @@ void TaskMeshServer::setup_routes() {
             .with_status(JobStatus::Queued)
             .build();
 
-        try {
-            store_->update_status(id, JobStatus::Queued, std::nullopt, 0);
-        } catch (const std::exception& ex) {
-            res.status = 500;
-            res.set_content(json{{"error", std::string("Database persistence error: ") + ex.what()}}.dump(), "application/json");
-            return;
-        }
-
         bool submitted = engine_.submit(retry_job);
         if (!submitted) {
+            store_->update_status(id, JobStatus::Failed, "Engine rejected retry submission (stopping or duplicate)", 0);
             res.status = 503;
             res.set_content(json{{"error", "Execution engine is shutting down or stopped."}}.dump(), "application/json");
             return;
@@ -561,23 +563,22 @@ void TaskMeshServer::setup_routes() {
         std::string job_id_str = req.matches[1];
         JobId id(job_id_str);
 
-        auto existing = store_->get_job(id);
-        if (!existing.has_value()) {
-            res.status = 404;
-            res.set_content(json{{"error", "Job not found or already deleted"}}.dump(), "application/json");
-            return;
-        }
-
-        if (existing->status() == JobStatus::Running) {
+        if (engine_.is_job_active(id)) {
             res.status = 409;
-            res.set_content(json{{"error", "Cannot delete an actively running job. Cancel it first."}}.dump(), "application/json");
+            res.set_content(json{{"error", "Cannot delete an active job (Queued or Running). Cancel the job first."}}.dump(), "application/json");
             return;
         }
 
-        bool deleted = store_->delete_job(id);
+        bool deleted = store_->delete_job(id, /*only_terminal=*/true);
         if (!deleted) {
-            res.status = 404;
-            res.set_content(json{{"error", "Job not found or already deleted"}}.dump(), "application/json");
+            auto check = store_->get_job(id);
+            if (check.has_value() && (check->status() == JobStatus::Running || check->status() == JobStatus::Queued)) {
+                res.status = 409;
+                res.set_content(json{{"error", "Cannot delete an active job (Queued or Running). Cancel the job first."}}.dump(), "application/json");
+            } else {
+                res.status = 404;
+                res.set_content(json{{"error", "Job not found or already deleted"}}.dump(), "application/json");
+            }
             return;
         }
 

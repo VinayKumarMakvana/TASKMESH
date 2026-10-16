@@ -766,6 +766,12 @@ std::string TaskMeshServer::get_dashboard_html() {
         <label>X-API-Key / Bearer Token</label>
         <input type="password" id="input-api-key" placeholder="Enter API key...">
       </div>
+      <div class="form-group" style="display:flex; align-items:center; gap:0.5rem; margin-top:0.75rem;">
+        <input type="checkbox" id="check-remember-key" style="width:auto; cursor:pointer;">
+        <label for="check-remember-key" style="margin:0; font-size:0.8rem; color:var(--text-muted); cursor:pointer;">
+          Remember across browser restarts (Local Storage). Unchecked = session only.
+        </label>
+      </div>
       <div style="display:flex; justify-content:space-between; margin-top:1.5rem;">
         <button type="button" class="btn btn-danger btn-xs" onclick="clearApiKey()">Clear Saved Key</button>
         <div style="display:flex; gap:0.5rem;">
@@ -784,9 +790,17 @@ std::string TaskMeshServer::get_dashboard_html() {
     let allJobs = [];
     let currentDetailsJob = null;
 
+    function getStoredApiKey() {
+      return sessionStorage.getItem('taskmesh_api_key') || localStorage.getItem('taskmesh_api_key') || '';
+    }
+
+    function isKeyInLocalStorage() {
+      return !!localStorage.getItem('taskmesh_api_key');
+    }
+
     function getHeaders() {
       const h = { 'Content-Type': 'application/json' };
-      const key = localStorage.getItem('taskmesh_api_key');
+      const key = getStoredApiKey();
       if (key) {
         h['X-API-Key'] = key;
         h['Authorization'] = 'Bearer ' + key;
@@ -808,28 +822,39 @@ std::string TaskMeshServer::get_dashboard_html() {
     }
 
     function updateApiKeyIndicator() {
-      const key = localStorage.getItem('taskmesh_api_key');
+      const key = getStoredApiKey();
       const btnText = document.getElementById('api-key-status-text');
       if (key) {
-        btnText.innerHTML = '<span style="color:#34d399;">●</span> Key Configured';
+        const isPersistent = isKeyInLocalStorage();
+        btnText.innerHTML = `<span style="color:#34d399;">●</span> ${isPersistent ? 'Key (Persistent)' : 'Key (Session)'}`;
       } else {
         btnText.innerText = 'Set API Key';
       }
     }
 
     function openApiKeyModal() {
-      document.getElementById('input-api-key').value = localStorage.getItem('taskmesh_api_key') || '';
+      document.getElementById('input-api-key').value = getStoredApiKey();
+      document.getElementById('check-remember-key').checked = isKeyInLocalStorage();
       document.getElementById('apikey-modal').classList.add('active');
     }
     function closeApiKeyModal() { document.getElementById('apikey-modal').classList.remove('active'); }
 
     function saveApiKey() {
       const key = document.getElementById('input-api-key').value.trim();
+      const remember = document.getElementById('check-remember-key').checked;
       if (key) {
-        localStorage.setItem('taskmesh_api_key', key);
-        showToast('API Key saved successfully', 'success');
+        if (remember) {
+          localStorage.setItem('taskmesh_api_key', key);
+          sessionStorage.removeItem('taskmesh_api_key');
+          showToast('API Key saved to local storage', 'success');
+        } else {
+          sessionStorage.setItem('taskmesh_api_key', key);
+          localStorage.removeItem('taskmesh_api_key');
+          showToast('API Key saved for this session only', 'success');
+        }
       } else {
         localStorage.removeItem('taskmesh_api_key');
+        sessionStorage.removeItem('taskmesh_api_key');
         showToast('API Key cleared', 'info');
       }
       closeApiKeyModal();
@@ -839,7 +864,9 @@ std::string TaskMeshServer::get_dashboard_html() {
 
     function clearApiKey() {
       localStorage.removeItem('taskmesh_api_key');
+      sessionStorage.removeItem('taskmesh_api_key');
       document.getElementById('input-api-key').value = '';
+      document.getElementById('check-remember-key').checked = false;
       closeApiKeyModal();
       updateApiKeyIndicator();
       showToast('API Key removed', 'info');

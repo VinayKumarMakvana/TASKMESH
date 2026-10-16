@@ -133,6 +133,8 @@ public:
 
     [[nodiscard]] bool is_running() const noexcept;
     [[nodiscard]] bool is_stopped() const noexcept;
+    [[nodiscard]] bool is_job_running(const JobId& id) const noexcept;
+    [[nodiscard]] bool is_job_active(const JobId& id) const noexcept;
     [[nodiscard]] EngineMetrics get_metrics() const;
     [[nodiscard]] size_t worker_count() const noexcept;
     [[nodiscard]] size_t queue_size() const noexcept;
@@ -162,6 +164,7 @@ private:
     std::unordered_set<JobId> cancelled_before_execution_;
     std::unordered_set<JobId> terminal_jobs_;
     std::unordered_set<JobId> submitted_job_ids_;
+    std::unordered_set<JobId> active_job_ids_;
 
     // 4. Thread-safe metrics accounting
     mutable std::mutex metrics_mutex_;

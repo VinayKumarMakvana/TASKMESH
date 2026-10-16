@@ -50,7 +50,13 @@ bool ExecutionEngine::submit(Job job) {
 
     {
         std::lock_guard<std::mutex> lock(jobs_mutex_);
+        if (active_job_ids_.contains(id) || running_jobs_.contains(id)) {
+            return false;
+        }
+        terminal_jobs_.erase(id);
+        cancelled_before_execution_.erase(id);
         submitted_job_ids_.insert(id);
+        active_job_ids_.insert(id);
     }
 
     {
@@ -65,6 +71,7 @@ bool ExecutionEngine::submit(Job job) {
         {
             std::lock_guard<std::mutex> lock(jobs_mutex_);
             submitted_job_ids_.erase(id);
+            active_job_ids_.erase(id);
         }
         {
             std::lock_guard<std::mutex> lock(metrics_mutex_);
@@ -137,6 +144,7 @@ void ExecutionEngine::shutdown(ShutdownMode mode) {
             // Mark all drained jobs as terminal / cancelled
             for (const auto& job : drained_jobs) {
                 cancelled_before_execution_.insert(job.id());
+                active_job_ids_.erase(job.id());
                 terminal_jobs_.insert(job.id());
             }
         }
@@ -174,6 +182,16 @@ bool ExecutionEngine::is_stopped() const noexcept {
     return stopped_;
 }
 
+bool ExecutionEngine::is_job_running(const JobId& id) const noexcept {
+    std::lock_guard<std::mutex> lock(jobs_mutex_);
+    return running_jobs_.contains(id);
+}
+
+bool ExecutionEngine::is_job_active(const JobId& id) const noexcept {
+    std::lock_guard<std::mutex> lock(jobs_mutex_);
+    return active_job_ids_.contains(id) || running_jobs_.contains(id);
+}
+
 EngineMetrics ExecutionEngine::get_metrics() const {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
     return metrics_;
@@ -196,18 +214,8 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
         // Check lifecycle status
         {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-            if (stopped_) {
+            if (stopped_ || (!running_ && !draining_)) {
                 break;
-            }
-            if (!running_) {
-                bool has_active_work = false;
-                {
-                    std::lock_guard<std::mutex> m_lock(metrics_mutex_);
-                    has_active_work = (metrics_.running > 0) || (metrics_.queued > 0);
-                }
-                if (!has_active_work && queue_.empty()) {
-                    break;
-                }
             }
         }
 
@@ -215,10 +223,10 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
         auto job_opt = queue_.pop_wait(config_.worker_poll_timeout);
         if (!job_opt.has_value()) {
             std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-            if (stopped_) {
+            if (stopped_ || (!running_ && !draining_)) {
                 break;
             }
-            if (draining_ || !running_) {
+            if (draining_) {
                 bool has_active_work = false;
                 {
                     std::lock_guard<std::mutex> m_lock(metrics_mutex_);
@@ -227,6 +235,7 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
                 if (!has_active_work && queue_.empty()) {
                     break;
                 }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             continue;
         }
@@ -251,6 +260,7 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
             if (cancelled_before_execution_.contains(id)) {
                 cancelled_pre_exec = true;
                 cancelled_before_execution_.erase(id);
+                active_job_ids_.erase(id);
                 terminal_jobs_.insert(id);
             } else {
                 cancel_source = std::make_shared<CancellationSource>();
@@ -307,6 +317,7 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
             {
                 std::lock_guard<std::mutex> lock(jobs_mutex_);
                 running_jobs_.erase(id);
+                active_job_ids_.erase(id);
                 terminal_jobs_.insert(id);
             }
             {
@@ -322,6 +333,7 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
             {
                 std::lock_guard<std::mutex> lock(jobs_mutex_);
                 running_jobs_.erase(id);
+                active_job_ids_.erase(id);
                 terminal_jobs_.insert(id);
             }
             {
@@ -377,6 +389,7 @@ void ExecutionEngine::worker_loop(size_t worker_id) {
                 {
                     std::lock_guard<std::mutex> lock(jobs_mutex_);
                     running_jobs_.erase(id);
+                    active_job_ids_.erase(id);
                     terminal_jobs_.insert(id);
                 }
 

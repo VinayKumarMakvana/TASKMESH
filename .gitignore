@@ -30,3 +30,8 @@ Desktop.ini
 *.db
 *.db-wal
 *.db-shm
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example

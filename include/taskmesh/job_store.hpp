@@ -57,8 +57,16 @@ public:
 
     /**
      * @brief Deletes a job by ID.
+     * @param id The job ID to delete.
+     * @param only_terminal If true, only deletes the record if the job is in a terminal status (Completed, Failed, Cancelled).
      */
-    virtual bool delete_job(const JobId& id) = 0;
+    virtual bool delete_job(const JobId& id, bool only_terminal = false) = 0;
+
+    /**
+     * @brief Atomically transitions a Failed or Cancelled job back to Queued with 0 attempts.
+     * @return true if status was updated, false if job was not found or was in an active/completed state.
+     */
+    virtual bool reset_job_for_retry(const JobId& id) = 0;
 
     /**
      * @brief Returns count of jobs grouped by status.
@@ -94,7 +102,8 @@ public:
                                             size_t limit = 100,
                                             size_t offset = 0) override;
     [[nodiscard]] std::vector<Job> recover_uncompleted_jobs() override;
-    bool delete_job(const JobId& id) override;
+    bool delete_job(const JobId& id, bool only_terminal = false) override;
+    bool reset_job_for_retry(const JobId& id) override;
     [[nodiscard]] std::unordered_map<JobStatus, size_t> count_by_status() override;
 
 private:

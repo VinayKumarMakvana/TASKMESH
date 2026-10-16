@@ -8,7 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build \
     git \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global http.version HTTP/1.1 \
+    && git config --global http.postBuffer 524288000
 
 WORKDIR /workspace
 
@@ -18,6 +20,7 @@ COPY . /workspace
 # Configure, build with optimization, and run full test suite
 RUN cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
     -DTASKMESH_BUILD_TESTS=ON \
     && cmake --build build --target taskmesh_server taskmesh_cli taskmesh_tests
 

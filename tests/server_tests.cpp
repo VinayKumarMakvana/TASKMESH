@@ -48,6 +48,8 @@ protected:
         if (server_thread_.joinable()) {
             server_thread_.join();
         }
+        server_.reset();
+        client_.reset();
         std::error_code ec;
         std::filesystem::remove(test_db_, ec);
         std::filesystem::remove(test_db_ + "-wal", ec);
@@ -204,7 +206,7 @@ TEST_F(TaskMeshServerTest, RetryRequeuesFailedJobSuccessfully) {
 
     // Poll until failed
     bool is_failed = false;
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 40; ++i) {
         std::this_thread::sleep_for(25ms);
         auto get_res = client_->Get("/api/v1/jobs/retry-test-1");
         if (get_res && get_res->status == 200) {
@@ -241,7 +243,7 @@ TEST_F(TaskMeshServerTest, RetryRejectsCompletedJobsWith409) {
 
     // Wait for completion
     bool is_completed = false;
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 40; ++i) {
         std::this_thread::sleep_for(25ms);
         auto get_res = client_->Get("/api/v1/jobs/completed-retry-1");
         if (get_res && get_res->status == 200) {
@@ -263,34 +265,43 @@ TEST_F(TaskMeshServerTest, RetryRejectsCompletedJobsWith409) {
 TEST_F(TaskMeshServerTest, DeleteEndpointLifecycleAndGuards) {
     httplib::Headers headers = {{"X-API-Key", "test-secret-token"}};
 
-    json job_req = {
-        {"id", "delete-guard-1"},
-        {"type", "compute"},
+    // 1. Submit a job that takes work (~75ms for email handler)
+    json slow_job = {
+        {"id", "delete-active-test"},
+        {"type", "email"},
         {"payload", "{}"}
     };
+    auto post_slow = client_->Post("/api/v1/jobs", headers, slow_job.dump(), "application/json");
+    ASSERT_TRUE(post_slow);
+    EXPECT_EQ(post_slow->status, 201);
 
-    auto post_res = client_->Post("/api/v1/jobs", headers, job_req.dump(), "application/json");
-    ASSERT_TRUE(post_res);
-    EXPECT_EQ(post_res->status, 201);
+    // 2. Attempt to delete while non-terminal -> must return 409 Conflict
+    auto early_del = client_->Delete("/api/v1/jobs/delete-active-test", headers, "", "text/plain");
+    ASSERT_TRUE(early_del);
+    EXPECT_EQ(early_del->status, 409);
 
-    // While running or queued, if running delete should 409
-    // Wait for job to complete
-    for (int i = 0; i < 20; ++i) {
+    // 3. Attempt to retry while active -> must return 409 Conflict
+    auto early_retry = client_->Post("/api/v1/jobs/delete-active-test/retry", headers, "", "text/plain");
+    ASSERT_TRUE(early_retry);
+    EXPECT_EQ(early_retry->status, 409);
+
+    // 4. Wait for job to complete
+    for (int i = 0; i < 40; ++i) {
         std::this_thread::sleep_for(25ms);
-        auto get_res = client_->Get("/api/v1/jobs/delete-guard-1");
+        auto get_res = client_->Get("/api/v1/jobs/delete-active-test");
         if (get_res && get_res->status == 200) {
             auto j = json::parse(get_res->body);
             if (j["status"] == "Completed") break;
         }
     }
 
-    // Delete completed job
-    auto del_res = client_->Delete("/api/v1/jobs/delete-guard-1", headers, "", "text/plain");
+    // 5. Delete completed job -> must return 200 OK
+    auto del_res = client_->Delete("/api/v1/jobs/delete-active-test", headers, "", "text/plain");
     ASSERT_TRUE(del_res);
     EXPECT_EQ(del_res->status, 200);
 
-    // Verify 404 after deletion
-    auto get_after = client_->Get("/api/v1/jobs/delete-guard-1");
+    // 6. Verify 404 after deletion
+    auto get_after = client_->Get("/api/v1/jobs/delete-active-test");
     ASSERT_TRUE(get_after);
     EXPECT_EQ(get_after->status, 404);
 }
@@ -311,7 +322,7 @@ TEST_F(TaskMeshServerTest, RetryResetsAttemptCountAndPersistsToStore) {
 
     // Wait until failed
     bool is_failed = false;
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 40; ++i) {
         std::this_thread::sleep_for(25ms);
         auto get_res = client_->Get("/api/v1/jobs/retry-attempt-test");
         if (get_res && get_res->status == 200) {

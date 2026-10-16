@@ -5,6 +5,7 @@ FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG        v1.15.2
+    GIT_SHALLOW    TRUE
 )
 
 # Ensure GoogleTest uses the same MSVC runtime CRT settings as the parent project
